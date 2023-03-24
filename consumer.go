@@ -141,6 +141,7 @@ func NewConsumer(config ConsumerConfig) (c *Consumer, err error) {
 	UUID := lo.Must(uuid.NewV4())
 	// Instantiates and initializes the consumer instance with previous created/configured reader, topics, group id, etc.
 	c = &Consumer{
+		ConsumerConfig:     config,
 		id:                 UUID.String(),
 		index:              0,
 		topics:             topics,
