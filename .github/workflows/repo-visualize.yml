@@ -19,4 +19,3 @@ jobs:
         with:
           excluded_paths: "ignore,.github"
           output_file: "images/project-structure.svg"
-          branch: diagram
