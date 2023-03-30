@@ -2,9 +2,11 @@ package kafka
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/go-logr/zapr"
@@ -14,6 +16,8 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
+
+const createTopicMaxRetries = 3
 
 // Producer struct holds data related to the producer
 //
@@ -25,7 +29,9 @@ type Producer struct {
 	id     string        // ID of producer
 	writer *kafka.Writer // Writer for producing messages
 
-	logger *logger // logger implement kafkago.Logger and logr.LogSinker
+	context context.Context
+	cancel  context.CancelCauseFunc
+	logger  *logger // logger implement kafkago.Logger and logr.LogSinker
 
 	writeCount int // write messages count
 }
@@ -81,11 +87,11 @@ func (config *ProducerConfig) Validate() (err error) {
 //	@return err error
 //	@author kevineluo
 //	@update 2023-03-15 10:52:06
-func NewProducer(config ProducerConfig) (p *Producer, err error) {
-	err = config.Validate()
-	if err != nil {
+func NewProducer(ctx context.Context, config ProducerConfig) (p *Producer, err error) {
+	if err = config.Validate(); err != nil {
 		return
 	}
+	subCtx, cancel := context.WithCancelCause(ctx)
 	brokers := strings.Split(config.Bootstrap, ",")
 	logger := &logger{*config.Logger}
 	writer := kafka.NewWriter(kafka.WriterConfig{
@@ -98,10 +104,31 @@ func NewProducer(config ProducerConfig) (p *Producer, err error) {
 		ProducerConfig: config,
 		id:             lo.Must(uuid.NewV4()).String(),
 		writer:         writer,
-		logger:         logger,
-		writeCount:     0,
+
+		context: subCtx,
+		cancel:  cancel,
+		logger:  logger,
+
+		writeCount: 0,
 	}
+
+	go p.cleanup()
+
 	return
+}
+
+// Close close the producer
+//
+//	@receiver producer *Producer
+//	@return error
+//	@author kevineluo
+//	@update 2023-03-15 02:43:18
+func (producer *Producer) Close() error {
+	if producer.closed() {
+		return ErrClosedConsumer
+	}
+	producer.cancel(fmt.Errorf("received close signal"))
+	return nil
 }
 
 // WriteMessage write a message to kafka
@@ -113,14 +140,23 @@ func NewProducer(config ProducerConfig) (p *Producer, err error) {
 //	@author kevineluo
 //	@update 2023-03-15 11:32:10
 func (producer *Producer) WriteMessage(ctx context.Context, topic string, key, value []byte, headers []kafka.Header) (err error) {
-	msg := kafka.Message{
-		Topic:   topic,
-		Headers: headers,
-		Key:     key,
-		Value:   value,
+	for i := 0; i < createTopicMaxRetries; i++ {
+		e := producer.writer.WriteMessages(ctx, kafka.Message{
+			Topic:   topic,
+			Headers: headers,
+			Key:     key,
+			Value:   value,
+		})
+		if e == nil {
+			producer.writeCount++
+			break
+		} else if errors.Is(e, kafka.LeaderNotAvailable) || errors.Is(e, context.DeadlineExceeded) {
+			time.Sleep(time.Millisecond * 250)
+			continue
+		} else {
+			return e
+		}
 	}
-	err = producer.writer.WriteMessages(ctx, msg)
-	producer.writeCount++
 	return
 }
 
@@ -133,27 +169,43 @@ func (producer *Producer) WriteMessage(ctx context.Context, topic string, key, v
 //	@author kevineluo
 //	@update 2023-03-29 02:46:03
 func (producer *Producer) WriteMessages(ctx context.Context, msgs ...kafka.Message) (err error) {
-	err = producer.writer.WriteMessages(ctx, msgs...)
-	producer.writeCount += len(msgs)
+	for i := 0; i < createTopicMaxRetries; i++ {
+		e := producer.writer.WriteMessages(ctx, msgs...)
+		if e == nil {
+			producer.writeCount += len(msgs)
+			break
+		} else if errors.Is(e, kafka.LeaderNotAvailable) || errors.Is(e, context.DeadlineExceeded) {
+			time.Sleep(time.Millisecond * 250)
+			continue
+		} else {
+			return e
+		}
+	}
 	return
 }
 
-// Close close the producer
+// closed check if the Producer is closed
 //
 //	@receiver producer *Producer
-//	@return error
+//	@return bool
 //	@author kevineluo
-//	@update 2023-03-15 02:43:18
-func (producer *Producer) Close() error {
-	return producer.clean()
+//	@update 2023-03-30 05:11:40
+func (producer *Producer) closed() bool {
+	select {
+	case <-producer.context.Done():
+		return true
+	default:
+		return false
+	}
 }
 
-// clean closes all opened resources / active goroutines of Producer
+// cleanup clean closes all opened resources of Producer
 //
 //	@receiver producer *Producer
 //	@return err error
 //	@author kevineluo
-//	@update 2023-03-15 02:40:39
-func (producer *Producer) clean() (err error) {
+//	@update 2023-03-30 05:16:44
+func (producer *Producer) cleanup() (err error) {
+	<-producer.context.Done()
 	return producer.writer.Close()
 }

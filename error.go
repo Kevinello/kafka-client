@@ -16,4 +16,8 @@ var (
 	// ErrClosedConsumer error when try to close closed consumer
 	//	@update 2023-03-15 02:03:09
 	ErrClosedConsumer = errors.New("the consumer has been closed")
+
+	// ErrClosedProducer error when try to close closed producer
+	//	@update 2023-03-30 05:12:28
+	ErrClosedProducer = errors.New("the producer has been closed")
 )

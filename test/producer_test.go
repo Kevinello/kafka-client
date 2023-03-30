@@ -10,7 +10,7 @@ import (
 	"unicode"
 
 	kc "github.com/Kevinello/kafka-client"
-	"github.com/gofrs/uuid"
+	"github.com/google/uuid"
 	"github.com/samber/lo"
 	"github.com/segmentio/kafka-go"
 	. "github.com/smartystreets/goconvey/convey"
@@ -32,23 +32,27 @@ func init() {
 }
 
 func TestProducer(t *testing.T) {
-	Convey("Given a kafka consumer", t, func() {
+	Convey("Given a kafka producer", t, func() {
 		config := kc.ProducerConfig{}
-		producer, err := kc.NewProducer(config)
+		producer, err := kc.NewProducer(context.Background(), config)
 		So(err, ShouldBeNil)
-		Convey("When produce 10 messages", func() {
-			msgs := make([]kafka.Message, 0)
+		Convey("When produce 100 messages", func() {
 			for i := 0; i < 10; i++ {
-				value := lo.RandomString(1000, chineseRunes)
-				msgs = append(msgs, kafka.Message{
-					Topic: "unit-test-topic-" + strconv.Itoa(i),
-					Key:   lo.Must(uuid.NewV4()).Bytes(),
-					Value: []byte(value),
-				})
+				msgs := make([]kafka.Message, 0)
+				for j := 0; j < 10; j++ {
+					key := uuid.New().String()
+					value := lo.RandomString(1000, chineseRunes)
+					msg := kafka.Message{
+						Topic: "unit-test-topic-" + strconv.Itoa(j),
+						Key:   []byte(key),
+						Value: []byte(value),
+					}
+					msgs = append(msgs, msg)
+					producer.Logger.Info("generate a message", "key", string(msg.Key), "value length", len(msg.Value), "topic", msg.Topic)
+				}
+				err = producer.WriteMessages(context.Background(), msgs...)
+				So(err, ShouldBeNil)
 			}
-			// TODO: 自动创建topic
-			err = producer.WriteMessages(context.Background(), msgs...)
-			So(err, ShouldBeNil)
 		})
 	})
 }

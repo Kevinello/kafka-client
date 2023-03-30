@@ -17,14 +17,14 @@ import (
 func TestConsumer(t *testing.T) {
 	Convey("Given a kafka consumer", t, func() {
 		var wg sync.WaitGroup
-		wg.Add(10)
+		wg.Add(100)
 		config := kc.ConsumerConfig{
 			GroupID:        "unit-test-group-" + time.Now().Format(time.DateOnly),
 			GetTopics:      kc.GetTopicReMatch([]string{"^unit-test.*$"}),
 			MaxMsgInterval: 5 * time.Second,
 			MessageHandler: func(msg *kafka.Message, consumer *kc.Consumer) (err error) {
 				defer wg.Done()
-				consumer.Logger.Info(string(msg.Value), "key", string(msg.Key), "topic", msg.Topic, "offset", msg.Offset)
+				consumer.Logger.Info("received a message", "key", string(msg.Key), "value length", len(msg.Value), "topic", msg.Topic, "offset", msg.Offset)
 				return
 			},
 		}
