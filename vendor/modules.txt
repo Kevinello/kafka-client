@@ -14,6 +14,9 @@ github.com/go-logr/zapr
 # github.com/gofrs/uuid v4.4.0+incompatible
 ## explicit
 github.com/gofrs/uuid
+# github.com/google/uuid v1.3.0
+## explicit
+github.com/google/uuid
 # github.com/gopherjs/gopherjs v0.0.0-20181017120253-0766667cb4d1
 ## explicit
 github.com/gopherjs/gopherjs/js
