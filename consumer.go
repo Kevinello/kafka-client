@@ -1,37 +1,28 @@
+// Package kafka Manage Kafka Client
+//
+//	@update 2023-03-28 02:01:25
 package kafka
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/alitto/pond"
 	"github.com/dlclark/regexp2"
 	"github.com/go-logr/logr"
+	"github.com/go-logr/zapr"
 	"github.com/gofrs/uuid"
 	"github.com/hashicorp/go-multierror"
 	"github.com/samber/lo"
 	"github.com/segmentio/kafka-go"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
-
-// GetTopicsFunc way to get needed topic(implemented by user)
-//
-//	@return topics []string
-//	@return err error
-//	@author kevineluo
-//	@update 2023-02-24 01:53:19
-type GetTopicsFunc func() (topics []string, err error)
-
-// MessageHandler function which handles received messages from the Kafka broker.
-//
-//	@param msg *kafkago.Message
-//	@param consumer *Consumer
-//	@return err error
-//	@author kevineluo
-//	@update 2023-02-24 11:34:44
-type MessageHandler func(msg *kafka.Message, consumer *Consumer) (err error)
 
 // Consumer struct holds data related to the consumer
 //
@@ -41,17 +32,18 @@ type Consumer struct {
 	ConsumerConfig
 
 	id         string           // ID of consumer
-	index      int              // Index of message from start offset
-	topics     []string         // Topics to consume
 	reader     *kafka.Reader    // Reader for consume multiple topics
 	workerPool *pond.WorkerPool // Pool of worker threads for processing messages
 
-	lastConsumeTime    time.Time // Last received data, if exceeded:
-	lastCheckTopicTime time.Time // Time when topics were last checked
-	errCount           int       // count errors from consuming message, when it reach
+	context          context.Context
+	cancel           context.CancelCauseFunc
+	consumeErrorChan chan error // channel receive error during consuming messages, when error count reach ConsumerConfig.MaxConsumeErrorCount, consumer will be closed
+	logger           *logger    // logger implement kafkago.Logger and logr.LogSinker
 
-	close  chan error // channel receive close signal and reason(error)
-	logger *logger    // logger implement kafkago.Logger and logr.LogSinker
+	brokers        []string
+	topics         []string // Topics to consume
+	deltaOffset    int      // message count from start offset
+	noMessageTimer *time.Timer
 }
 
 // ConsumerConfig configuration object used to create new instances of Consumer
@@ -59,48 +51,84 @@ type Consumer struct {
 //	@author kevineluo
 //	@update 2023-03-15 03:01:48
 type ConsumerConfig struct {
-	bootstrap                string        // kafka bootstrap
-	groupID                  string        // Group ID of consumer
-	maxMsgInterval           time.Duration // If no message received after [MaxMsgInterval] seconds then restart Consumer
-	MaxConsumeGoroutines     int           // Maximum number of goroutine for subscribing to topics
-	KafkaCheckTopicPeriodSec int           // Time period for checking topics
-	MaxConsumeErrorCount     int           // max error count for consuming messages
-	getTopics                GetTopicsFunc // Function used to check topics
-	logrLogger               *logr.Logger  // logger implement logr.LogSinker
+	Bootstrap            string         // kafka bootstrap, default: "localhost:9092"
+	GroupID              string         // Group ID of consumer
+	MaxMsgInterval       time.Duration  // If no message received after [MaxMsgInterval] seconds then restart Consumer, default: 300 seconds
+	SyncTopicInterval    time.Duration  // Interval for consumer to sync topics, default: 15 seconds
+	MaxConsumeGoroutines int            // Maximum number of goroutine for subscribing to topics, default: runtime.NumCPU()
+	MaxConsumeErrorCount int            // max error count for consuming messages, default: 5
+	MessageHandler       MessageHandler // function which handles received messages from the Kafka broker.
+	GetTopics            GetTopicsFunc  // Function used to sync topics, default: GetAllTopic
+	Logger               *logr.Logger   // logger implement logr.LogSinker, default: zapr.Logger
+	LogLevel             int            // used when use default Logger, follow the zap style level(https://pkg.go.dev/go.uber.org/zap@v1.24.0/zapcore#Level), setting the log level for zapr.Logger(config.logLevel should be in range[-1, 5], default: 0 -- InfoLevel)
 }
 
-// Check check config and set default value
+// GetTopicsFunc way to get needed topic(implemented and provided by user)
+//
+//	@return topics []string
+//	@return err error
+//	@author kevineluo
+//	@update 2023-03-28 07:16:54
+type GetTopicsFunc func(broker string) (topics []string, err error)
+
+// MessageHandler function which handles received messages from the Kafka broker.
+//
+//	@param msg *kafka.Message
+//	@param consumer *Consumer
+//	@return err error
+//	@author kevineluo
+//	@update 2023-03-28 07:16:44
+type MessageHandler func(msg *kafka.Message, consumer *Consumer) (err error)
+
+// Validate check config and set default value
 //
 //	@receiver config *ConsumerConfig
 //	@return err error
 //	@author kevineluo
 //	@update 2023-03-15 03:19:23
-func (config *ConsumerConfig) Check() (err error) {
-	if config.bootstrap == "" {
-		config.bootstrap = "localhost:9092"
+func (config *ConsumerConfig) Validate() (err error) {
+	if config.Bootstrap == "" {
+		config.Bootstrap = "localhost:9092"
 	}
-	if config.getTopics == nil {
-		config.getTopics = GetAllTopic(config.bootstrap)
+	if config.GroupID == "" {
+		err = multierror.Append(err, errors.New("missing GroupID"))
 	}
-	if config.groupID == "" {
-		err = multierror.Append(err, errors.New("missing groupID"))
+	if config.MaxMsgInterval == 0 {
+		config.MaxMsgInterval = 5 * 60 * time.Second
 	}
-	if config.logrLogger == nil {
-		logger := logr.Discard()
-		config.logrLogger = &logger
-	}
-	if config.maxMsgInterval == 0 {
-		config.maxMsgInterval = 5 * 60
-	}
-	if config.KafkaCheckTopicPeriodSec == 0 {
-		config.KafkaCheckTopicPeriodSec = 10
-	}
-	if config.MaxConsumeErrorCount == 0 {
-		config.MaxConsumeErrorCount = 5
+	if config.SyncTopicInterval == 0 {
+		config.SyncTopicInterval = 15 * time.Second
 	}
 	if config.MaxConsumeGoroutines == 0 {
 		config.MaxConsumeGoroutines = runtime.NumCPU()
 	}
+	if config.MaxConsumeErrorCount == 0 {
+		config.MaxConsumeErrorCount = 5
+	}
+	if config.MessageHandler == nil {
+		err = multierror.Append(err, errors.New("missing MessageHandler"))
+	}
+	if config.GetTopics == nil {
+		config.GetTopics = GetAllTopic()
+	}
+	if config.Logger == nil {
+		var cfg zap.Config
+		level := zapcore.Level(config.LogLevel)
+		if level >= zap.DebugLevel && level <= zap.FatalLevel {
+			if level == zap.DebugLevel {
+				cfg = zap.NewDevelopmentConfig()
+			} else {
+				cfg = zap.NewProductionConfig()
+			}
+		} else {
+			err = fmt.Errorf("[ConsumerConfig.Check] found invalid ConsumerConfig.LogLevel: %d, ConsumerConfig.LogLevel should be in range[-1, 5]", config.LogLevel)
+			return
+		}
+		zapLogger := zap.New(zapcore.NewCore(zapcore.NewConsoleEncoder(cfg.EncoderConfig), zapcore.NewMultiWriteSyncer(zapcore.AddSync(os.Stdout)), level))
+		logger := zapr.NewLogger(zapLogger)
+		config.Logger = &logger
+	}
+
 	return
 }
 
@@ -113,84 +141,54 @@ func (config *ConsumerConfig) Check() (err error) {
 //	@return err error
 //	@author kevineluo
 //	@update 2023-03-14 01:12:16
-func NewConsumer(config ConsumerConfig) (c *Consumer, err error) {
-	err = config.Check()
+func NewConsumer(ctx context.Context, config ConsumerConfig) (c *Consumer, err error) {
+	err = config.Validate()
 	if err != nil {
 		return
 	}
-	topics, err := config.getTopics()
+	subCtx, cancel := context.WithCancelCause(ctx)
+	logger := &logger{*config.Logger}
+	brokers := strings.Split(config.Bootstrap, ",")
+	topics, err := config.GetTopics(brokers[0])
 	if err != nil {
-		err = fmt.Errorf("[NewConsumer] getTopics error: %w, GroupID: %s", err, config.groupID)
+		err = fmt.Errorf("[NewConsumer] getTopics error: %w, GroupID: %s", err, config.GroupID)
 		return
 	} else if len(topics) == 0 {
-		err = fmt.Errorf("[NewConsumer] getTopics error: %w, GroupID: %s", ErrNoTopics, config.groupID)
+		err = fmt.Errorf("[NewConsumer] getTopics error: %w, GroupID: %s", ErrNoTopics, config.GroupID)
 		return
 	}
+	config.Logger.Info("[NewConsumer] first time get topics success", "topics", topics)
 
-	brokers := getBrokerList(config.bootstrap)
-	logger := &logger{*config.logrLogger}
 	// Configures Kafka reader object using the retrieved topics, brokers and group identifier and initialized.
 	reader := kafka.NewReader(kafka.ReaderConfig{
 		GroupTopics: topics,
-		GroupID:     config.groupID,
+		GroupID:     config.GroupID,
 		Brokers:     brokers,
 		Logger:      logger,
 	})
-	// Initializes and configures worker pool instance using the maximum conventional goroutines count.
-	workerPool := pond.New(config.MaxConsumeGoroutines, 2*config.MaxConsumeGoroutines, pond.Strategy(pond.Balanced()))
-	UUID := lo.Must(uuid.NewV4())
 	// Instantiates and initializes the consumer instance with previous created/configured reader, topics, group id, etc.
 	c = &Consumer{
-		ConsumerConfig:     config,
-		id:                 UUID.String(),
-		index:              0,
-		topics:             topics,
-		reader:             reader,
-		workerPool:         workerPool,
-		lastConsumeTime:    time.Now(),
-		lastCheckTopicTime: time.Now(),
-		close:              make(chan error),
-		logger:             logger,
+		ConsumerConfig:   config,
+		id:               lo.Must(uuid.NewV4()).String(),
+		deltaOffset:      0,
+		brokers:          brokers,
+		topics:           topics,
+		reader:           reader,
+		workerPool:       pond.New(config.MaxConsumeGoroutines, 2*config.MaxConsumeGoroutines, pond.Strategy(pond.Balanced())),
+		noMessageTimer:   time.NewTimer(config.MaxMsgInterval),
+		context:          subCtx,
+		cancel:           cancel,
+		consumeErrorChan: make(chan error),
+		logger:           logger,
 	}
 
-	return
-}
+	// goroutine for checking error / topic change etc.
+	go c.check(subCtx)
 
-// StartConsume start consume messages with exact MessageHandler
-//
-//	@receiver consumer *Consumer
-//	@param ch MessageHandler
-//	@return err error
-//	@author kevineluo
-//	@update 2023-03-14 06:46:28
-func (consumer *Consumer) StartConsume(ctx context.Context, messageHandler MessageHandler) {
-	subCtx, cancel := context.WithCancel(ctx)
-
-	// when the close signal reaches, clean up all resources, call cancel
-	go func() {
-		reason := <-consumer.close
-		if err := consumer.clean(reason); err != nil {
-			consumer.logger.Error(err, "error when clean consumer")
-		}
-		cancel()
-	}()
-
-	// goroutine for checking if it has been too long since any data was received.
-	go consumer.check(subCtx)
-
-	// keep consuming messages
-	go consumer.run(subCtx, messageHandler)
+	// goroutine for keep consuming messages
+	go c.run(subCtx)
 
 	return
-}
-
-// Close close the consumer
-//
-//	@receiver consumer *Consumer
-//	@author kevineluo
-//	@update 2023-03-15 01:52:18
-func (consumer *Consumer) Close() error {
-	return consumer.sendCloseSignal(fmt.Errorf("received close signal"))
 }
 
 // run keep consuming messages
@@ -200,29 +198,132 @@ func (consumer *Consumer) Close() error {
 //	@param messageHandler MessageHandler
 //	@author kevineluo
 //	@update 2023-03-15 02:39:04
-func (consumer *Consumer) run(ctx context.Context, messageHandler MessageHandler) {
+func (consumer *Consumer) run(ctx context.Context) {
+	defer close(consumer.consumeErrorChan)
 	for {
-		// check if consumer.ErrCount reach MaxConsumeErrorCount
-		if consumer.errCount >= consumer.MaxConsumeErrorCount {
-			consumer.close <- ErrTooManyConsumeError
+		select {
+		case <-ctx.Done():
+			consumer.logger.Info("[Consumer.run] context canceled, stop consuming messages", "cause", context.Cause(ctx))
 			return
+		default:
+			if msg, e := consumer.reader.ReadMessage(ctx); e != nil && e != context.Canceled {
+				consumer.logger.Error(e, "[Consumer.run] error when read message")
+				consumer.consumeErrorChan <- e
+			} else {
+				// successful consumption of data
+				consumer.workerPool.Submit(func() {
+					if e = consumer.MessageHandler(&msg, consumer); e != nil && e != context.Canceled {
+						consumer.logger.Error(e, "[Consumer.run] error when handle message")
+						consumer.consumeErrorChan <- e
+					} else {
+						consumer.deltaOffset++
+						consumer.noMessageTimer.Reset(consumer.MaxMsgInterval)
+					}
+				})
+			}
 		}
+	}
+}
 
-		if msg, e := consumer.reader.ReadMessage(ctx); e != nil {
-			consumer.logger.Error(e, "[Consumer.run] error when read message")
-			consumer.errCount++
-		} else {
-			// successful consumption of data
-			consumer.workerPool.Submit(func() {
-				if e = messageHandler(&msg, consumer); e != nil {
-					consumer.logger.Error(e, "[Consumer.run] error when handle message")
-					consumer.errCount++
-				} else {
-					consumer.index++
-					consumer.lastConsumeTime = time.Now()
-				}
+// check check if it has been too long since any data was received / topic change
+//
+//	@receiver consumer *Consumer pointer to the consumer which calls this function
+//	@return err error
+//	@author kevineluo
+//	@update 2023-02-24 11:33:25
+func (consumer *Consumer) check(ctx context.Context) {
+	defer consumer.clean()
+
+	syncTopicTicker := time.NewTicker(consumer.SyncTopicInterval)
+	defer syncTopicTicker.Stop()
+
+	errList := make([]error, 0)
+
+	for {
+		select {
+		case <-ctx.Done():
+			consumer.logger.Info("[Consumer.check] context canceled, stop checking")
+			return
+		case <-consumer.noMessageTimer.C:
+			// too long since last consumed message, reset kafka reader(connection)
+			consumer.reader = kafka.NewReader(kafka.ReaderConfig{
+				GroupTopics: consumer.topics,
+				GroupID:     consumer.GroupID,
+				Brokers:     consumer.brokers,
+				Logger:      consumer.logger,
 			})
+			return
+		case <-syncTopicTicker.C:
+			if len(consumer.topics) == 0 {
+				consumer.cancel(ErrNoTopics)
+				return
+			}
+			if topics, changed, err := consumer.checkTopics(); err != nil {
+				consumer.cancel(fmt.Errorf("[Consumer.checkTopics] error when check topics: %w", err))
+				return
+			} else if changed {
+				consumer.topics = topics
+				// detect topic change, reset kafka reader
+				consumer.reader = kafka.NewReader(kafka.ReaderConfig{
+					GroupTopics: topics,
+					GroupID:     consumer.GroupID,
+					Brokers:     consumer.brokers,
+					Logger:      consumer.logger,
+				})
+			}
+		case err := <-consumer.consumeErrorChan:
+			errList = append(errList, err)
+			if len(errList) >= consumer.MaxConsumeErrorCount {
+				consumer.cancel(ErrTooManyConsumeError)
+				return
+			}
 		}
+	}
+}
+
+// clean closes all opened resources / active goroutines of Consumer
+// It returns an error if there were any.
+//
+//	@receiver consumer *Consumer
+//	@return err error
+//	@author kevineluo
+//	@update 2023-02-24 11:46:25
+func (consumer *Consumer) clean() (err error) {
+	err = consumer.reader.Close()
+	if err != nil {
+		consumer.logger.Error(err, "[Consumer.Close] error when close kafka Reader", "ID", consumer.id, "delta offset", consumer.deltaOffset)
+	}
+	// wait for workerpool to handle rest messages
+	consumer.workerPool.StopAndWaitFor(30 * time.Second)
+
+	return
+}
+
+// Close manually close the consumer
+//
+//	@receiver consumer *Consumer
+//	@author kevineluo
+//	@update 2023-03-15 01:52:18
+func (consumer *Consumer) Close() error {
+	if consumer.closed() {
+		return ErrClosedConsumer
+	}
+	consumer.cancel(fmt.Errorf("received close signal"))
+	return nil
+}
+
+// closed check if the Buffer is closed
+//
+//	@param buffer *Buffer[T]
+//	@return closed
+//	@author kevineluo
+//	@update 2023-03-15 11:09:03
+func (consumer *Consumer) closed() bool {
+	select {
+	case <-consumer.context.Done():
+		return true
+	default:
+		return false
 	}
 }
 
@@ -235,112 +336,22 @@ func (consumer *Consumer) run(ctx context.Context, messageHandler MessageHandler
 //	@return err error
 //	@author kevineluo
 //	@update 2023-02-24 10:31:34
-func (consumer *Consumer) checkTopics() (changed bool, err error) {
-	newTopics := make([]string, 0)
+func (consumer *Consumer) checkTopics() (topic []string, changed bool, err error) {
+	topic = make([]string, 0)
 
-	if newTopics, err = consumer.getTopics(); err != nil {
-		err = fmt.Errorf("[Consumer.CheckTopics] getTopics error: %w, GroupID: %s", err, consumer.groupID)
+	if topic, err = consumer.GetTopics(consumer.brokers[0]); err != nil {
+		err = fmt.Errorf("[Consumer.CheckTopics] getTopics error: %w, GroupID: %s", err, consumer.GroupID)
 		return
 	}
 
-	if len(newTopics) != len(consumer.topics) {
+	if len(topic) != len(consumer.topics) {
 		changed = true
 		return
 	}
 
-	left, right := lo.Difference(consumer.topics, newTopics)
+	left, right := lo.Difference(consumer.topics, topic)
 	changed = len(left) != 0 || len(right) != 0
 
-	return
-}
-
-// sendCloseSignal send close signal with error to Consumer, then the Consumer will start clean up and close
-//
-//	@receiver consumer *Consumer
-//	@param reason error
-//	@return err error
-//	@author kevineluo
-//	@update 2023-03-15 10:08:20
-func (consumer *Consumer) sendCloseSignal(reason error) (err error) {
-	// check if consumer.close has been closed
-	select {
-	case <-consumer.close:
-		err = ErrClosedConsumer
-		return
-	default:
-	}
-
-	// try to send close signal to consumer
-	select {
-	case consumer.close <- reason:
-		consumer.logger.Info("[Consumer.sendCloseSignal] send close signal to consumer")
-	default:
-		// the goroutine listen to consumer.close hasn't start in consumer.StartConsume
-		err = ErrInactiveConsumer
-	}
-
-	return
-}
-
-// check check if it has been too long since any data was received / topic change
-//
-//	@receiver consumer *Consumer pointer to the consumer which calls this function
-//	@return err error
-//	@author kevineluo
-//	@update 2023-02-24 11:33:25
-func (consumer *Consumer) check(ctx context.Context) {
-	consumer.lastCheckTopicTime = time.Now()
-
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-	for range ticker.C {
-		select {
-		case <-ctx.Done():
-			consumer.logger.Info("[Consumer.Check] context canceled, stop checking")
-			return
-		default:
-		}
-		now := time.Now()
-		if now.Sub(consumer.lastCheckTopicTime).Seconds() > float64(consumer.KafkaCheckTopicPeriodSec) {
-			consumer.lastCheckTopicTime = time.Now()
-
-			if len(consumer.topics) == 0 {
-				consumer.sendCloseSignal(ErrNoTopics)
-				return
-			}
-
-			if changed, err := consumer.checkTopics(); err != nil {
-				consumer.sendCloseSignal(fmt.Errorf("Consumer.CheckTopics error: %w", err))
-				return
-			} else if changed {
-				consumer.sendCloseSignal(ErrTopicChanged)
-				return
-			}
-		}
-
-		// Check if it has been too long since any data was received
-		if now.Sub(consumer.lastConsumeTime) > consumer.maxMsgInterval {
-			consumer.sendCloseSignal(ErrTooLongSinceLastConsume)
-			return
-		}
-	}
-}
-
-// clean closes all opened resources / active goroutines of Consumer
-// It returns an error if there were any.
-//
-//	@receiver consumer *Consumer
-//	@return err error
-//	@author kevineluo
-//	@update 2023-02-24 11:46:25
-func (consumer *Consumer) clean(reason error) (err error) {
-	consumer.logger.Info("[Consumer.Close] consumer will be closed.", "reason", reason.Error())
-	close(consumer.close)
-	err = consumer.reader.Close()
-	if err != nil {
-		consumer.logger.Error(err, "[Consumer.Close] error when close kafka Reader", "ID", consumer.id, "index", consumer.index)
-	}
-	consumer.workerPool.StopAndWait()
 	return
 }
 
@@ -348,22 +359,21 @@ func (consumer *Consumer) clean(reason error) (err error) {
 // matches found (resTopics) and an err if applicable.
 //
 //	@param reList []string
-//	@return resTopics []string
-//	@return err error
+//	@return GetTopicsFunc
 //	@author kevineluo
-//	@update 2023-02-24 05:00:53
-func GetTopicReMatch(reList []string, kafkaBootstrap string) GetTopicsFunc {
-	return func() (resTopics []string, err error) {
-		resTopics = make([]string, 0)
-		topics, err := getTopics(getBrokerList(kafkaBootstrap)[0])
+//	@update 2023-03-29 03:22:56
+func GetTopicReMatch(reList []string) GetTopicsFunc {
+	return func(broker string) (topics []string, err error) {
+		topics = make([]string, 0)
+		allTopics, err := getTopics(broker)
 		if err != nil {
 			return
 		}
-		for _, topic := range topics {
+		for _, topic := range allTopics {
 			for _, re := range reList {
 				expr := regexp2.MustCompile(re, 0)
 				if matched, err := expr.MatchString(topic); err == nil && matched {
-					resTopics = append(resTopics, topic)
+					topics = append(topics, topic)
 				}
 			}
 		}
@@ -377,9 +387,9 @@ func GetTopicReMatch(reList []string, kafkaBootstrap string) GetTopicsFunc {
 //	@return GetTopicsFunc
 //	@author kevineluo
 //	@update 2023-03-15 03:14:57
-func GetAllTopic(kafkaBootstrap string) GetTopicsFunc {
-	return func() (topics []string, err error) {
-		topics, err = getTopics(getBrokerList(kafkaBootstrap)[0])
+func GetAllTopic() GetTopicsFunc {
+	return func(broker string) (topics []string, err error) {
+		topics, err = getTopics(broker)
 		return
 	}
 }
