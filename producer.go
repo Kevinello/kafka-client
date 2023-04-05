@@ -4,20 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
-	"github.com/go-logr/logr"
-	"github.com/go-logr/zapr"
 	"github.com/gofrs/uuid"
 	"github.com/samber/lo"
 	"github.com/segmentio/kafka-go"
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
 )
-
-const createTopicMaxRetries = 3
 
 // Producer struct holds data related to the producer
 //
@@ -36,49 +29,6 @@ type Producer struct {
 	writeCount int // write messages count
 }
 
-// ProducerConfig configuration object used to create new instances of Producer
-//
-//	@author kevineluo
-//	@update 2023-03-15 03:01:48
-type ProducerConfig struct {
-	Bootstrap          string       // kafka bootstrap, default: "localhost:9092"
-	Async              bool         // determine synchronously / asynchronously write messages, default: false
-	IgnoreMissingTopic bool         // when it's false, producer will automate create missing topic before publication, else it will return an error when meeting missing topic, default: false
-	Logger             *logr.Logger // logger implement logr.LogSinker, default: zapr.Logger
-	LogLevel           int          // used when Config.logger is nil, follow the zap style level(https://pkg.go.dev/go.uber.org/zap@v1.24.0/zapcore#Level), setting the log level for zapr.Logger(config.logLevel should be in range[-1, 5], default: 0 -- InfoLevel)
-}
-
-// Validate check config and set default value
-//
-//	@receiver config *ProducerConfig
-//	@return err error
-//	@author kevineluo
-//	@update 2023-03-15 03:19:23
-func (config *ProducerConfig) Validate() (err error) {
-	if config.Bootstrap == "" {
-		config.Bootstrap = "localhost:9092"
-	}
-	if config.Logger == nil {
-		var cfg zap.Config
-		level := zapcore.Level(config.LogLevel)
-		if level >= zap.DebugLevel && level <= zap.FatalLevel {
-			if level == zap.DebugLevel {
-				cfg = zap.NewDevelopmentConfig()
-			} else {
-				cfg = zap.NewProductionConfig()
-			}
-		} else {
-			err = fmt.Errorf("[ProducerConfig.Check] found invalid ProducerConfig.LogLevel: %d, ProducerConfig.LogLevel should be in range[-1, 5]", config.LogLevel)
-			return
-		}
-		zapLogger := zap.New(zapcore.NewCore(zapcore.NewConsoleEncoder(cfg.EncoderConfig), zapcore.NewMultiWriteSyncer(zapcore.AddSync(os.Stdout)), level))
-		logger := zapr.NewLogger(zapLogger)
-		config.Logger = &logger
-	}
-
-	return
-}
-
 // NewProducer creates a new Kafka producer.
 //
 //	@param kafkaBootstrap string
@@ -87,19 +37,49 @@ func (config *ProducerConfig) Validate() (err error) {
 //	@return err error
 //	@author kevineluo
 //	@update 2023-03-15 10:52:06
+//
+// NewProducer creates a new producer with the given config
+// A producer is a wrapper of kafka writer with some additional features
+// such as topic auto creation, message batching, etc
+// Note that the producer is not thread-safe
+// If you want to use one producer in multiple goroutines, you should do the synchronization by yourself
 func NewProducer(ctx context.Context, config ProducerConfig) (p *Producer, err error) {
+	// validate the config
 	if err = config.Validate(); err != nil {
 		return
 	}
+
+	// create a sub-context with a cancel function to be used for the producer
 	subCtx, cancel := context.WithCancelCause(ctx)
-	brokers := strings.Split(config.Bootstrap, ",")
+
+	// create a logger
 	logger := &logger{*config.Logger}
-	writer := kafka.NewWriter(kafka.WriterConfig{
+
+	// log the start of this producer
+	logger.Info("[NewProducer] start new producer with config", "config", config)
+
+	// split the bootstrap servers into a slice
+	brokers := strings.Split(config.Bootstrap, ",")
+
+	// create a kafka writer config
+	writerConfig := kafka.WriterConfig{
 		Brokers: brokers,
-		Logger:  logger,
 		Async:   config.Async,
-	})
-	writer.AllowAutoTopicCreation = !config.IgnoreMissingTopic
+	}
+
+	// set the logger if in verbose mode
+	if config.Verbose {
+		writerConfig.Logger = logger
+	}
+
+	// create a kafka writer
+	writer := kafka.NewWriter(writerConfig)
+
+	// set the writer to allow auto topic creation
+	// if we don't want to ignore the missing topic
+	writer.AllowAutoTopicCreation = config.AllowAutoTopicCreation
+
+	// create a producer
 	p = &Producer{
 		ProducerConfig: config,
 		id:             lo.Must(uuid.NewV4()).String(),
@@ -112,6 +92,7 @@ func NewProducer(ctx context.Context, config ProducerConfig) (p *Producer, err e
 		writeCount: 0,
 	}
 
+	// start the cleanup goroutine
 	go p.cleanup()
 
 	return
@@ -131,35 +112,6 @@ func (producer *Producer) Close() error {
 	return nil
 }
 
-// WriteMessage write a message to kafka
-//
-//	@receiver producer *Producer
-//	@param ctx context.Context
-//	@param message *Message
-//	@return err error
-//	@author kevineluo
-//	@update 2023-03-15 11:32:10
-func (producer *Producer) WriteMessage(ctx context.Context, topic string, key, value []byte, headers []kafka.Header) (err error) {
-	for i := 0; i < createTopicMaxRetries; i++ {
-		e := producer.writer.WriteMessages(ctx, kafka.Message{
-			Topic:   topic,
-			Headers: headers,
-			Key:     key,
-			Value:   value,
-		})
-		if e == nil {
-			producer.writeCount++
-			break
-		} else if errors.Is(e, kafka.LeaderNotAvailable) || errors.Is(e, context.DeadlineExceeded) {
-			time.Sleep(time.Millisecond * 250)
-			continue
-		} else {
-			return e
-		}
-	}
-	return
-}
-
 // WriteMessages write messages to kafka, notice that all messages should set their own topic
 //
 //	@receiver producer *Producer
@@ -169,7 +121,7 @@ func (producer *Producer) WriteMessage(ctx context.Context, topic string, key, v
 //	@author kevineluo
 //	@update 2023-03-29 02:46:03
 func (producer *Producer) WriteMessages(ctx context.Context, msgs ...kafka.Message) (err error) {
-	for i := 0; i < createTopicMaxRetries; i++ {
+	for i := 0; i < len(msgs); i++ {
 		e := producer.writer.WriteMessages(ctx, msgs...)
 		if e == nil {
 			producer.writeCount += len(msgs)

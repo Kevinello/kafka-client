@@ -14,24 +14,33 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
+// TestConsumer test consumer
+//
+//	@param t *testing.T
+//	@author kevineluo
+//	@update 2023-04-01 11:42:04
 func TestConsumer(t *testing.T) {
 	Convey("Given a kafka consumer", t, func() {
 		var wg sync.WaitGroup
-		wg.Add(100)
+		wg.Add(1000)
+		count := 0
 		config := kc.ConsumerConfig{
+			Bootstrap:      "9.134.95.221:9092",
 			GroupID:        "unit-test-group-" + time.Now().Format(time.DateOnly),
 			GetTopics:      kc.GetTopicReMatch([]string{"^unit-test.*$"}),
-			MaxMsgInterval: 5 * time.Second,
+			MaxMsgInterval: 10 * time.Second,
 			MessageHandler: func(msg *kafka.Message, consumer *kc.Consumer) (err error) {
 				defer wg.Done()
-				consumer.Logger.Info("received a message", "key", string(msg.Key), "value length", len(msg.Value), "topic", msg.Topic, "offset", msg.Offset)
+				count++
+				consumer.Logger.Info("received a message", "key", string(msg.Key), "value length", len(msg.Value), "topic", msg.Topic, "offset", msg.Offset, "count", count)
 				return
 			},
+			// Verbose: true,
 		}
 		consumer, err := kc.NewConsumer(context.Background(), config)
 		So(err, ShouldBeNil)
 
-		// consume 10 messages
+		// consume 1000 messages
 		wg.Wait()
 
 		// Close the consumer

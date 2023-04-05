@@ -5,23 +5,16 @@ package kafka
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"os"
-	"runtime"
+	"io"
 	"strings"
 	"time"
 
 	"github.com/alitto/pond"
 	"github.com/dlclark/regexp2"
-	"github.com/go-logr/logr"
-	"github.com/go-logr/zapr"
 	"github.com/gofrs/uuid"
-	"github.com/hashicorp/go-multierror"
 	"github.com/samber/lo"
 	"github.com/segmentio/kafka-go"
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
 )
 
 // Consumer struct holds data related to the consumer
@@ -41,26 +34,10 @@ type Consumer struct {
 	noMessageTimer   *time.Timer // timer for checking if it's too long since last consumed message
 	logger           *logger     // logger implement kafkago.Logger and logr.LogSinker
 
-	brokers     []string
-	topics      []string // Topics to consume
-	deltaOffset int      // message count from start offset
-}
-
-// ConsumerConfig configuration object used to create new instances of Consumer
-//
-//	@author kevineluo
-//	@update 2023-03-15 03:01:48
-type ConsumerConfig struct {
-	Bootstrap            string         // kafka bootstrap, default: "localhost:9092"
-	GroupID              string         // Group ID of consumer
-	MaxMsgInterval       time.Duration  // If no message received after [MaxMsgInterval] seconds then restart Consumer, default: 300 seconds
-	SyncTopicInterval    time.Duration  // Interval for consumer to sync topics, default: 15 seconds
-	MaxConsumeGoroutines int            // Maximum number of goroutine for subscribing to topics, default: runtime.NumCPU()
-	MaxConsumeErrorCount int            // max error count for consuming messages, default: 5
-	MessageHandler       MessageHandler // function which handles received messages from the Kafka broker.
-	GetTopics            GetTopicsFunc  // Function used to sync topics, default: GetAllTopic
-	Logger               *logr.Logger   // logger implement logr.LogSinker, default: zapr.Logger
-	LogLevel             int            // used when use default Logger, follow the zap style level(https://pkg.go.dev/go.uber.org/zap@v1.24.0/zapcore#Level), setting the log level for zapr.Logger(config.logLevel should be in range[-1, 5], default: 0 -- InfoLevel)
+	brokers       []string
+	topics        []string // Topics to consume
+	consumeErrors []error  // collect errors during consuming messages
+	deltaOffset   int      // message count from start offset
 }
 
 // GetTopicsFunc way to get needed topic(implemented and provided by user)
@@ -80,58 +57,6 @@ type GetTopicsFunc func(broker string) (topics []string, err error)
 //	@update 2023-03-28 07:16:44
 type MessageHandler func(msg *kafka.Message, consumer *Consumer) (err error)
 
-// Validate check config and set default value
-//
-//	@receiver config *ConsumerConfig
-//	@return err error
-//	@author kevineluo
-//	@update 2023-03-15 03:19:23
-func (config *ConsumerConfig) Validate() (err error) {
-	if config.Bootstrap == "" {
-		config.Bootstrap = "localhost:9092"
-	}
-	if config.GroupID == "" {
-		err = multierror.Append(err, errors.New("missing GroupID"))
-	}
-	if config.MaxMsgInterval == 0 {
-		config.MaxMsgInterval = 5 * 60 * time.Second
-	}
-	if config.SyncTopicInterval == 0 {
-		config.SyncTopicInterval = 15 * time.Second
-	}
-	if config.MaxConsumeGoroutines == 0 {
-		config.MaxConsumeGoroutines = runtime.NumCPU()
-	}
-	if config.MaxConsumeErrorCount == 0 {
-		config.MaxConsumeErrorCount = 5
-	}
-	if config.MessageHandler == nil {
-		err = multierror.Append(err, errors.New("missing MessageHandler"))
-	}
-	if config.GetTopics == nil {
-		config.GetTopics = GetAllTopic()
-	}
-	if config.Logger == nil {
-		var cfg zap.Config
-		level := zapcore.Level(config.LogLevel)
-		if level >= zap.DebugLevel && level <= zap.FatalLevel {
-			if level == zap.DebugLevel {
-				cfg = zap.NewDevelopmentConfig()
-			} else {
-				cfg = zap.NewProductionConfig()
-			}
-		} else {
-			err = fmt.Errorf("[ConsumerConfig.Check] found invalid ConsumerConfig.LogLevel: %d, ConsumerConfig.LogLevel should be in range[-1, 5]", config.LogLevel)
-			return
-		}
-		zapLogger := zap.New(zapcore.NewCore(zapcore.NewConsoleEncoder(cfg.EncoderConfig), zapcore.NewMultiWriteSyncer(zapcore.AddSync(os.Stdout)), level))
-		logger := zapr.NewLogger(zapLogger)
-		config.Logger = &logger
-	}
-
-	return
-}
-
 // NewConsumer creates a new Kafka consumer.
 //
 //	@param kafkaBootstrap string
@@ -147,24 +72,30 @@ func NewConsumer(ctx context.Context, config ConsumerConfig) (c *Consumer, err e
 	}
 	subCtx, cancel := context.WithCancelCause(ctx)
 	logger := &logger{*config.Logger}
+	logger.Info("[NewConsumer] start new consumer with config", "config", config)
 	brokers := strings.Split(config.Bootstrap, ",")
 	topics, err := config.GetTopics(brokers[0])
 	if err != nil {
 		err = fmt.Errorf("[NewConsumer] getTopics error: %w, GroupID: %s", err, config.GroupID)
 		return
-	} else if len(topics) == 0 {
-		err = fmt.Errorf("[NewConsumer] getTopics error: %w, GroupID: %s", ErrNoTopics, config.GroupID)
-		return
 	}
 	config.Logger.Info("[NewConsumer] first time get topics success", "topics", topics)
 
 	// Configures Kafka reader object using the retrieved topics, brokers and group identifier and initialized.
-	reader := kafka.NewReader(kafka.ReaderConfig{
+	readerConfig := kafka.ReaderConfig{
 		GroupTopics: topics,
 		GroupID:     config.GroupID,
 		Brokers:     brokers,
-		Logger:      logger,
-	})
+	}
+	if config.Verbose {
+		readerConfig.Logger = logger
+	}
+
+	var reader *kafka.Reader
+	if len(topics) > 0 {
+		// we can only create reader when topics is not empty
+		reader = kafka.NewReader(readerConfig)
+	}
 	// Instantiates and initializes the consumer instance with previous created/configured reader, topics, group id, etc.
 	c = &Consumer{
 		ConsumerConfig: config,
@@ -183,6 +114,7 @@ func NewConsumer(ctx context.Context, config ConsumerConfig) (c *Consumer, err e
 		deltaOffset: 0,
 	}
 
+	// goroutine for cleanup resources when consumer closed
 	go c.cleanup()
 
 	// goroutine for checking error / topic change etc.
@@ -222,21 +154,31 @@ func (consumer *Consumer) run() {
 			consumer.logger.Info("[Consumer.run] context canceled, stop consuming messages", "cause", context.Cause(consumer.context))
 			return
 		default:
-			if msg, e := consumer.reader.ReadMessage(consumer.context); e != nil && e != context.Canceled {
-				consumer.logger.Error(e, "[Consumer.run] error when read message")
-				consumer.consumeErrorChan <- e
-			} else {
-				// successful consumption of data
-				if !consumer.workerPool.Stopped() {
-					consumer.workerPool.Submit(func() {
-						if e = consumer.MessageHandler(&msg, consumer); e != nil && e != context.Canceled {
-							consumer.logger.Error(e, "[Consumer.run] error when handle message")
-							consumer.consumeErrorChan <- e
-						} else {
-							consumer.deltaOffset++
-							consumer.noMessageTimer.Reset(consumer.MaxMsgInterval)
-						}
-					})
+			if consumer.reader != nil {
+				if msg, e := consumer.reader.ReadMessage(consumer.context); e != nil {
+					if e == context.Canceled || e == context.DeadlineExceeded {
+						consumer.logger.Info("[Consumer.run] context canceled, stop consuming messages", "cause", context.Cause(consumer.context))
+						return
+					} else if e == io.EOF {
+						// EOF means that the reader has been closed
+						consumer.logger.Info("[Consumer.run] reader closed, restart reading message")
+					} else {
+						consumer.logger.Error(e, "[Consumer.run] error when read message")
+						consumer.consumeErrorChan <- e
+					}
+				} else {
+					// successful consumption of data
+					if !consumer.workerPool.Stopped() {
+						consumer.workerPool.Submit(func() {
+							if e = consumer.MessageHandler(&msg, consumer); e != nil && e != context.Canceled {
+								consumer.logger.Error(e, "[Consumer.run] error when handle message")
+								consumer.consumeErrorChan <- e
+							} else {
+								consumer.deltaOffset++
+								consumer.noMessageTimer.Reset(consumer.MaxMsgInterval)
+							}
+						})
+					}
 				}
 			}
 		}
@@ -264,32 +206,25 @@ func (consumer *Consumer) check() {
 		case <-consumer.noMessageTimer.C:
 			// too long since last consumed message, reset kafka reader(connection)
 			consumer.logger.Info("[Consumer.check] too long since last consumed message, about to reset kafka connection")
-			consumer.reader = kafka.NewReader(kafka.ReaderConfig{
-				GroupTopics: consumer.topics,
-				GroupID:     consumer.GroupID,
-				Brokers:     consumer.brokers,
-				Logger:      consumer.logger,
-			})
+			consumer.resetReader()
 			consumer.noMessageTimer.Reset(consumer.MaxMsgInterval)
 		case <-syncTopicTicker.C:
 			// tick to sync topics
-			if topics, changed, err := consumer.checkTopics(); err != nil {
+			syncTopicTicker.Stop()
+			if topics, changed, err := consumer.syncTopics(); err != nil {
 				consumer.cancel(fmt.Errorf("[Consumer.check] error when check topics: %w", err))
 				return
 			} else if changed {
 				consumer.topics = topics
 				// topic change detected, reset kafka reader
 				consumer.logger.Info("[Consumer.check] topic change detected, about to reset kafka connection")
-				consumer.reader = kafka.NewReader(kafka.ReaderConfig{
-					GroupTopics: topics,
-					GroupID:     consumer.GroupID,
-					Brokers:     consumer.brokers,
-					Logger:      consumer.logger,
-				})
+				consumer.resetReader()
 			}
+			syncTopicTicker.Reset(consumer.SyncTopicInterval)
 		case err := <-consumer.consumeErrorChan:
 			errList = append(errList, err)
 			if len(errList) >= consumer.MaxConsumeErrorCount {
+				consumer.logger.Error(ErrTooManyConsumeError, "[Consumer.check] too many consume errors", "error list", errList)
 				consumer.cancel(ErrTooManyConsumeError)
 				return
 			}
@@ -306,12 +241,15 @@ func (consumer *Consumer) check() {
 //	@update 2023-02-24 11:46:25
 func (consumer *Consumer) cleanup() (err error) {
 	<-consumer.context.Done()
-	err = consumer.reader.Close()
-	if err != nil {
-		consumer.logger.Error(err, "[Consumer.cleanup] error when close kafka Reader", "ID", consumer.id, "delta offset", consumer.deltaOffset)
+	if consumer.reader != nil {
+		err = consumer.reader.Close()
+		if err != nil {
+			consumer.logger.Error(err, "[Consumer.cleanup] error when close kafka Reader", "ID", consumer.id, "delta offset", consumer.deltaOffset)
+		}
 	}
 	// wait for workerpool to handle rest messages
 	consumer.workerPool.StopAndWaitFor(30 * time.Second)
+	consumer.noMessageTimer.Stop()
 
 	return
 }
@@ -331,7 +269,7 @@ func (consumer *Consumer) closed() bool {
 	}
 }
 
-// checkTopics checkTopics is used to check if topic list has been changed.
+// syncTopics syncTopics is used to check if topic list has been changed.
 // GetTopics() function is called to get the topics list and then sorted to make sure both lists are in same order. Length of both lists is compared, and if different return true.
 // Otherwise loop through each list and compare each element for equality.
 //
@@ -340,23 +278,44 @@ func (consumer *Consumer) closed() bool {
 //	@return err error
 //	@author kevineluo
 //	@update 2023-02-24 10:31:34
-func (consumer *Consumer) checkTopics() (topic []string, changed bool, err error) {
-	topic = make([]string, 0)
+func (consumer *Consumer) syncTopics() (topics []string, changed bool, err error) {
+	topics = make([]string, 0)
 
-	if topic, err = consumer.GetTopics(consumer.brokers[0]); err != nil {
-		err = fmt.Errorf("[Consumer.CheckTopics] getTopics error: %w, GroupID: %s", err, consumer.GroupID)
+	if topics, err = consumer.GetTopics(consumer.brokers[0]); err != nil {
+		err = fmt.Errorf("[Consumer.CheckTopics] get topics error: %w, GroupID: %s", err, consumer.GroupID)
 		return
 	}
 
-	if len(topic) != len(consumer.topics) {
+	consumer.logger.Info("[Consumer.checkTopics] get topics success", "topics", topics)
+
+	if len(topics) != len(consumer.topics) {
 		changed = true
 		return
 	}
 
-	left, right := lo.Difference(consumer.topics, topic)
+	left, right := lo.Difference(consumer.topics, topics)
 	changed = len(left) != 0 || len(right) != 0
 
 	return
+}
+
+func (consumer *Consumer) resetReader() {
+	if consumer.reader != nil {
+		// close old reader first, or the new reader will not be able to bind partition(unless waiting for the kafka rebalance)
+		consumer.reader.Close()
+	}
+	if len(consumer.topics) > 0 {
+		readerConfig := kafka.ReaderConfig{
+			GroupTopics: consumer.topics,
+			GroupID:     consumer.GroupID,
+			Brokers:     consumer.brokers,
+		}
+		if consumer.Verbose {
+			readerConfig.Logger = consumer.logger
+		}
+		consumer.reader = kafka.NewReader(readerConfig)
+	}
+	consumer.logger.Info("[Consumer.resetReader] reset kafka reader success", "topics", consumer.topics)
 }
 
 // GetTopicReMatch function decorator for get topics with regex match, return GetTopicsFunc

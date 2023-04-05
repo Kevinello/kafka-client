@@ -31,28 +31,42 @@ func init() {
 	}
 }
 
+// TestProducer test producer
+//
+//	@param t *testing.T
+//	@author kevineluo
+//	@update 2023-04-01 11:42:41
 func TestProducer(t *testing.T) {
 	Convey("Given a kafka producer", t, func() {
-		config := kc.ProducerConfig{}
+		// Create a producer config.
+		config := kc.ProducerConfig{
+			Bootstrap:              "9.134.95.221:9092",
+			AllowAutoTopicCreation: true,
+		}
+		// New a producer instance.
 		producer, err := kc.NewProducer(context.Background(), config)
 		So(err, ShouldBeNil)
-		Convey("When produce 100 messages", func() {
+		Convey("When produce 1000 messages on 10 topics", func() {
+			randomString := make([]string, 0)
 			for i := 0; i < 10; i++ {
-				msgs := make([]kafka.Message, 0)
+				randomString = append(randomString, lo.RandomString(1000, chineseRunes))
+			}
+			for i := 0; i < 100; i++ {
+				msgs := make([]kafka.Message, 10)
 				for j := 0; j < 10; j++ {
+					// Generate a random key.
 					key := uuid.New().String()
-					value := lo.RandomString(1000, chineseRunes)
-					msg := kafka.Message{
+					msgs[j] = kafka.Message{
 						Topic: "unit-test-topic-" + strconv.Itoa(j),
 						Key:   []byte(key),
-						Value: []byte(value),
+						Value: []byte(randomString[j]),
 					}
-					msgs = append(msgs, msg)
-					producer.Logger.Info("generate a message", "key", string(msg.Key), "value length", len(msg.Value), "topic", msg.Topic)
 				}
 				err = producer.WriteMessages(context.Background(), msgs...)
 				So(err, ShouldBeNil)
+				producer.Logger.Info("write messages done", "count", len(msgs))
 			}
+			producer.Logger.Info("write all messages done")
 		})
 	})
 }
