@@ -8,7 +8,7 @@ kafka-client is a high level wrapped kafka API for kafka consuming and producing
 
 - Customized Message Handler
 - Multi topics Consumption(customized get topic function)
-- Concurrent workerpool for consuming messages
+- Concurrent workerpool for consuming messages(flexible workerpool size)
 - Consume error collection(when there is too many error, consumer will cancel itself)
 - Consumption frequency detect(reconnect kafka when message frequency is too low)
 - Safe manual close
@@ -17,7 +17,9 @@ kafka-client is a high level wrapped kafka API for kafka consuming and producing
 
 ### Kafka producer
 
-- Asynchronous write message
+- Asynchronously / Synchronously write message
+- Safe manual close
+- Asynchronous cancellations and timeouts using Go contexts
 - Custom logger and verbose option
 
 ## Project Structure
