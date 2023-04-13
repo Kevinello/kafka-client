@@ -129,21 +129,10 @@ func (config *ConsumerConfig) Validate() (err error) {
 	}
 	// use default logger if not set
 	if config.Logger == nil {
-		var cfg zap.Config
-		level := zapcore.Level(config.LogLevel)
-		if level >= zap.DebugLevel && level <= zap.FatalLevel {
-			if level == zap.DebugLevel {
-				cfg = zap.NewDevelopmentConfig()
-			} else {
-				cfg = zap.NewProductionConfig()
-			}
-		} else {
-			err = fmt.Errorf("[ConsumerConfig.Check] found invalid ConsumerConfig.LogLevel: %d, ConsumerConfig.LogLevel should be in range[-1, 5]", config.LogLevel)
+		*config.Logger, err = initDefaultLogger(config.LogLevel)
+		if err != nil {
 			return
 		}
-		zapLogger := zap.New(zapcore.NewCore(zapcore.NewConsoleEncoder(cfg.EncoderConfig), zapcore.NewMultiWriteSyncer(zapcore.AddSync(os.Stdout)), level))
-		logger := zapr.NewLogger(zapLogger)
-		config.Logger = &logger
 	}
 
 	return
@@ -160,22 +149,35 @@ func (config *ProducerConfig) Validate() (err error) {
 		config.Bootstrap = "localhost:9092"
 	}
 	if config.Logger == nil {
-		var cfg zap.Config
-		level := zapcore.Level(config.LogLevel)
-		if level >= zap.DebugLevel && level <= zap.FatalLevel {
-			if level == zap.DebugLevel {
-				cfg = zap.NewDevelopmentConfig()
-			} else {
-				cfg = zap.NewProductionConfig()
-			}
-		} else {
-			err = fmt.Errorf("[ProducerConfig.Check] found invalid ProducerConfig.LogLevel: %d, ProducerConfig.LogLevel should be in range[-1, 5]", config.LogLevel)
+		*config.Logger, err = initDefaultLogger(config.LogLevel)
+		if err != nil {
 			return
 		}
-		zapLogger := zap.New(zapcore.NewCore(zapcore.NewConsoleEncoder(cfg.EncoderConfig), zapcore.NewMultiWriteSyncer(zapcore.AddSync(os.Stdout)), level))
-		logger := zapr.NewLogger(zapLogger)
-		config.Logger = &logger
 	}
 
+	return
+}
+
+// initDefaultLogger init default zapr.Logger
+//
+//	@param level int
+//	@return logger logr.Logger
+//	@return err error
+//	@author kevineluo
+//	@update 2023-04-06 10:58:46
+func initDefaultLogger(level int) (logger logr.Logger, err error) {
+	var cfg zap.Config
+	zapLevel := zapcore.Level(level)
+	if zapLevel >= zap.DebugLevel && zapLevel <= zap.FatalLevel {
+		if zapLevel == zap.DebugLevel {
+			cfg = zap.NewDevelopmentConfig()
+		} else {
+			cfg = zap.NewProductionConfig()
+		}
+	} else {
+		err = fmt.Errorf("[InitDefaultLogger] found invalid level: %d, level should be in range[-1, 5]", level)
+	}
+	zapLogger := zap.New(zapcore.NewCore(zapcore.NewConsoleEncoder(cfg.EncoderConfig), zapcore.NewMultiWriteSyncer(zapcore.AddSync(os.Stdout)), zapLevel))
+	logger = zapr.NewLogger(zapLogger)
 	return
 }
