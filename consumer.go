@@ -132,7 +132,7 @@ func NewConsumer(ctx context.Context, config ConsumerConfig) (c *Consumer, err e
 //	@author kevineluo
 //	@update 2023-03-15 01:52:18
 func (consumer *Consumer) Close() error {
-	if consumer.closed() {
+	if consumer.Closed() {
 		return ErrClosedConsumer
 	}
 	consumer.cancel(fmt.Errorf("received close signal"))
@@ -254,13 +254,13 @@ func (consumer *Consumer) cleanup() (err error) {
 	return
 }
 
-// closed check if the Consumer is closed
+// Closed check if the Consumer is Closed
 //
 //	@receiver consumer *Consumer
 //	@return bool
 //	@author kevineluo
 //	@update 2023-03-30 05:11:33
-func (consumer *Consumer) closed() bool {
+func (consumer *Consumer) Closed() bool {
 	select {
 	case <-consumer.context.Done():
 		return true

@@ -105,7 +105,7 @@ func NewProducer(ctx context.Context, config ProducerConfig) (p *Producer, err e
 //	@author kevineluo
 //	@update 2023-03-15 02:43:18
 func (producer *Producer) Close() error {
-	if producer.closed() {
+	if producer.Closed() {
 		return ErrClosedConsumer
 	}
 	producer.cancel(fmt.Errorf("received close signal"))
@@ -136,13 +136,13 @@ func (producer *Producer) WriteMessages(ctx context.Context, msgs ...kafka.Messa
 	return
 }
 
-// closed check if the Producer is closed
+// Closed check if the Producer is Closed
 //
 //	@receiver producer *Producer
 //	@return bool
 //	@author kevineluo
 //	@update 2023-03-30 05:11:40
-func (producer *Producer) closed() bool {
+func (producer *Producer) Closed() bool {
 	select {
 	case <-producer.context.Done():
 		return true
