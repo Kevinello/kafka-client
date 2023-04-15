@@ -132,8 +132,10 @@ func NewConsumer(ctx context.Context, config ConsumerConfig) (c *Consumer, err e
 //	@author kevineluo
 //	@update 2023-03-15 01:52:18
 func (consumer *Consumer) Close() error {
-	if consumer.Closed() {
+	select {
+	case <-consumer.Closed():
 		return ErrClosedConsumer
+	default:
 	}
 	consumer.cancel(fmt.Errorf("received close signal"))
 	return nil
@@ -254,19 +256,14 @@ func (consumer *Consumer) cleanup() (err error) {
 	return
 }
 
-// Closed check if the Consumer is Closed
+// Closed provide consumer.context.Done() to check if consumer is closed
 //
 //	@receiver consumer *Consumer
 //	@return bool
 //	@author kevineluo
 //	@update 2023-03-30 05:11:33
-func (consumer *Consumer) Closed() bool {
-	select {
-	case <-consumer.context.Done():
-		return true
-	default:
-		return false
-	}
+func (consumer *Consumer) Closed() <-chan struct{} {
+	return consumer.context.Done()
 }
 
 // syncTopics syncTopics is used to check if topic list has been changed.

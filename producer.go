@@ -105,8 +105,10 @@ func NewProducer(ctx context.Context, config ProducerConfig) (p *Producer, err e
 //	@author kevineluo
 //	@update 2023-03-15 02:43:18
 func (producer *Producer) Close() error {
-	if producer.Closed() {
-		return ErrClosedConsumer
+	select {
+	case <-producer.Closed():
+		return ErrClosedProducer
+	default:
 	}
 	producer.cancel(fmt.Errorf("received close signal"))
 	return nil
@@ -142,13 +144,8 @@ func (producer *Producer) WriteMessages(ctx context.Context, msgs ...kafka.Messa
 //	@return bool
 //	@author kevineluo
 //	@update 2023-03-30 05:11:40
-func (producer *Producer) Closed() bool {
-	select {
-	case <-producer.context.Done():
-		return true
-	default:
-		return false
-	}
+func (producer *Producer) Closed() <-chan struct{} {
+	return producer.context.Done()
 }
 
 // cleanup clean closes all opened resources of Producer
