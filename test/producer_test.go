@@ -67,6 +67,10 @@ func TestProducer(t *testing.T) {
 				producer.Logger.Info("write messages done", "count", len(msgs))
 			}
 			producer.Logger.Info("write all messages done")
+
+			// Close the producer
+			err = producer.Close()
+			So(err, ShouldBeNil)
 		})
 	})
 }
