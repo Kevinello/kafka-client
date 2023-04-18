@@ -137,7 +137,6 @@ func (consumer *Consumer) CheckState() {
 	var (
 		consumerClosed    bool
 		readerExist       bool
-		readerStat        kafka.ReaderStats
 		workerpoolStopped bool
 	)
 
@@ -148,7 +147,6 @@ func (consumer *Consumer) CheckState() {
 	}
 
 	if consumer.reader != nil {
-		readerStat = consumer.reader.Stats()
 		readerExist = true
 	}
 
@@ -159,7 +157,6 @@ func (consumer *Consumer) CheckState() {
 	consumer.logger.Info("[Consumer.CheckState] consumer states",
 		"consumerClosed", consumerClosed,
 		"readerExist", readerExist,
-		"readerStat", readerStat,
 		"workerpoolStopped", workerpoolStopped,
 		"consumeErrors", consumer.consumeErrors,
 		"deltaOffset", consumer.deltaOffset,
@@ -273,6 +270,7 @@ func (consumer *Consumer) check() {
 				return
 			}
 		}
+		consumer.CheckState()
 	}
 }
 
@@ -364,7 +362,6 @@ func (consumer *Consumer) resetReader() {
 	} else {
 		consumer.logger.Info("[Consumer.resetReader] no topics to reset kafka reader")
 	}
-	consumer.CheckState()
 }
 
 // GetTopicReMatch function decorator for get topics with regex match, return GetTopicsFunc
