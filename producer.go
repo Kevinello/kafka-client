@@ -156,5 +156,6 @@ func (producer *Producer) Closed() <-chan struct{} {
 //	@update 2023-03-30 05:16:44
 func (producer *Producer) cleanup() (err error) {
 	<-producer.context.Done()
+	producer.logger.Info("[Producer.cleanup] context canceled, about to cleanup resources", "id", producer.id, "writeCount", producer.writeCount)
 	return producer.writer.Close()
 }

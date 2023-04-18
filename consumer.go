@@ -67,10 +67,12 @@ type MessageHandler func(msg *kafka.Message, consumer *Consumer) (err error)
 //	@author kevineluo
 //	@update 2023-03-14 01:12:16
 func NewConsumer(ctx context.Context, config ConsumerConfig) (c *Consumer, err error) {
+	subCtx, cancel := context.WithCancelCause(ctx)
+
 	if err = config.Validate(); err != nil {
 		return
 	}
-	subCtx, cancel := context.WithCancelCause(ctx)
+
 	logger := &logger{*config.Logger}
 	logger.Info("[NewConsumer] start new consumer with config", "config", config)
 	brokers := strings.Split(config.Bootstrap, ",")
@@ -79,7 +81,7 @@ func NewConsumer(ctx context.Context, config ConsumerConfig) (c *Consumer, err e
 		err = fmt.Errorf("[NewConsumer] getTopics error: %w, GroupID: %s", err, config.GroupID)
 		return
 	}
-	config.Logger.Info("[NewConsumer] first time get topics success", "topics", topics)
+	logger.Info("[NewConsumer] first time get topics success", "topics", topics)
 
 	// Configures Kafka reader object using the retrieved topics, brokers and group identifier and initialized.
 	readerConfig := kafka.ReaderConfig{
@@ -124,6 +126,44 @@ func NewConsumer(ctx context.Context, config ConsumerConfig) (c *Consumer, err e
 	go c.run()
 
 	return
+}
+
+// CheckState check consumer state
+//
+//	@receiver consumer *Consumer
+//	@author kevineluo
+//	@update 2023-04-18 01:34:40
+func (consumer *Consumer) CheckState() {
+	var (
+		consumerClosed    bool
+		readerExist       bool
+		readerStat        kafka.ReaderStats
+		workerpoolStopped bool
+	)
+
+	select {
+	case <-consumer.Closed():
+		consumerClosed = true
+	default:
+	}
+
+	if consumer.reader != nil {
+		readerStat = consumer.reader.Stats()
+		readerExist = true
+	}
+
+	if consumer.workerPool.Stopped() {
+		workerpoolStopped = true
+	}
+
+	consumer.logger.Info("[Consumer.CheckState] consumer states",
+		"consumerClosed", consumerClosed,
+		"readerExist", readerExist,
+		"readerStat", readerStat,
+		"workerpoolStopped", workerpoolStopped,
+		"consumeErrors", consumer.consumeErrors,
+		"deltaOffset", consumer.deltaOffset,
+		"topics", consumer.topics)
 }
 
 // Close manually close the consumer
@@ -180,6 +220,8 @@ func (consumer *Consumer) run() {
 								consumer.noMessageTimer.Reset(consumer.MaxMsgInterval)
 							}
 						})
+					} else {
+						consumer.logger.Error(fmt.Errorf("worker pool stopped"), "[Consumer.run] worker pool stopped but still receive message, please report this bug")
 					}
 				}
 			}
@@ -243,15 +285,22 @@ func (consumer *Consumer) check() {
 //	@update 2023-02-24 11:46:25
 func (consumer *Consumer) cleanup() (err error) {
 	<-consumer.context.Done()
+	consumer.logger.Info("[Consumer.cleanup] context canceled, about to cleanup resources", "cause", context.Cause(consumer.context), "ID", consumer.id, "delta offset", consumer.deltaOffset)
 	if consumer.reader != nil {
+		consumer.logger.Info("[Consumer.cleanup] close kafka reader")
 		err = consumer.reader.Close()
 		if err != nil {
-			consumer.logger.Error(err, "[Consumer.cleanup] error when close kafka Reader", "ID", consumer.id, "delta offset", consumer.deltaOffset)
+			consumer.logger.Error(err, "[Consumer.cleanup] error when close kafka Reader", "cause", context.Cause(consumer.context), "ID", consumer.id, "delta offset", consumer.deltaOffset)
 		}
 	}
 	// wait for workerpool to handle rest messages
+	consumer.logger.Info("[Consumer.cleanup] wait for workerpool to handle rest messages")
 	consumer.workerPool.StopAndWaitFor(30 * time.Second)
+
+	consumer.logger.Info("[Consumer.cleanup] stop noMessageTimer")
 	consumer.noMessageTimer.Stop()
+
+	consumer.logger.Info("[Consumer.cleanup] cleanup finished", "cause", context.Cause(consumer.context), "ID", consumer.id, "delta offset", consumer.deltaOffset)
 
 	return
 }
@@ -311,8 +360,11 @@ func (consumer *Consumer) resetReader() {
 			readerConfig.Logger = consumer.logger
 		}
 		consumer.reader = kafka.NewReader(readerConfig)
+		consumer.logger.Info("[Consumer.resetReader] reset kafka reader success", "topics", consumer.topics)
+	} else {
+		consumer.logger.Info("[Consumer.resetReader] no topics to reset kafka reader")
 	}
-	consumer.logger.Info("[Consumer.resetReader] reset kafka reader success", "topics", consumer.topics)
+	consumer.CheckState()
 }
 
 // GetTopicReMatch function decorator for get topics with regex match, return GetTopicsFunc
