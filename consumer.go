@@ -12,7 +12,7 @@ import (
 
 	"github.com/alitto/pond"
 	"github.com/dlclark/regexp2"
-	"github.com/gofrs/uuid"
+	"github.com/google/uuid"
 	"github.com/samber/lo"
 	"github.com/segmentio/kafka-go"
 )
@@ -101,7 +101,7 @@ func NewConsumer(ctx context.Context, config ConsumerConfig) (c *Consumer, err e
 	// Instantiates and initializes the consumer instance with previous created/configured reader, topics, group id, etc.
 	c = &Consumer{
 		ConsumerConfig: config,
-		id:             lo.Must(uuid.NewV4()).String(),
+		id:             uuid.New().String(),
 		reader:         reader,
 		workerPool:     pond.New(config.MaxConsumeGoroutines, 2*config.MaxConsumeGoroutines, pond.Strategy(pond.Balanced())),
 

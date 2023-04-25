@@ -7,8 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gofrs/uuid"
-	"github.com/samber/lo"
+	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
 )
 
@@ -82,7 +81,7 @@ func NewProducer(ctx context.Context, config ProducerConfig) (p *Producer, err e
 	// create a producer
 	p = &Producer{
 		ProducerConfig: config,
-		id:             lo.Must(uuid.NewV4()).String(),
+		id:             uuid.New().String(),
 		writer:         writer,
 
 		context: subCtx,
