@@ -24,9 +24,11 @@ import (
 type Consumer struct {
 	ConsumerConfig
 
-	id         string           // ID of consumer
-	reader     *kafka.Reader    // Reader for consume multiple topics
-	workerPool *pond.WorkerPool // Pool of worker threads for processing messages
+	id           string                  // ID of consumer
+	reader       *kafka.Reader           // Reader for consume multiple topics
+	readerCtx    context.Context         // Context for reader
+	cancelReader context.CancelCauseFunc // Cancel function for reader
+	workerPool   *pond.WorkerPool        // Pool of worker threads for processing messages
 
 	context          context.Context
 	cancel           context.CancelCauseFunc
@@ -98,6 +100,7 @@ func NewConsumer(ctx context.Context, config ConsumerConfig) (c *Consumer, err e
 		// we can only create reader when topics is not empty
 		reader = kafka.NewReader(readerConfig)
 	}
+
 	// Instantiates and initializes the consumer instance with previous created/configured reader, topics, group id, etc.
 	c = &Consumer{
 		ConsumerConfig: config,
@@ -115,6 +118,7 @@ func NewConsumer(ctx context.Context, config ConsumerConfig) (c *Consumer, err e
 		topics:      topics,
 		deltaOffset: 0,
 	}
+	c.readerCtx, c.cancelReader = context.WithCancelCause(subCtx)
 
 	// goroutine for cleanup resources when consumer closed
 	go c.cleanup()
@@ -194,10 +198,9 @@ func (consumer *Consumer) run() {
 			return
 		default:
 			if consumer.reader != nil {
-				if msg, e := consumer.reader.ReadMessage(consumer.context); e != nil {
+				if msg, e := consumer.reader.ReadMessage(consumer.readerCtx); e != nil {
 					if e == context.Canceled || e == context.DeadlineExceeded {
-						consumer.logger.Info("[Consumer.run] context canceled, stop consuming messages", "cause", context.Cause(consumer.context))
-						return
+						consumer.logger.Info("[Consumer.run] context canceled, restart reading message", "cause", context.Cause(consumer.readerCtx))
 					} else if e == io.EOF {
 						// EOF means that the reader has been closed
 						consumer.logger.Info("[Consumer.run] reader closed, restart reading message")
@@ -287,6 +290,7 @@ func (consumer *Consumer) cleanup() (err error) {
 	consumer.logger.Info("[Consumer.cleanup] context canceled, about to cleanup resources", "cause", context.Cause(consumer.context), "ID", consumer.id, "delta offset", consumer.deltaOffset)
 	if consumer.reader != nil {
 		consumer.logger.Info("[Consumer.cleanup] close kafka reader")
+		consumer.cancelReader(fmt.Errorf("[Consumer.cleanup] context canceled, about to close kafka reader"))
 		err = consumer.reader.Close()
 		if err != nil {
 			consumer.logger.Error(err, "[Consumer.cleanup] error when close kafka Reader", "cause", context.Cause(consumer.context), "ID", consumer.id, "delta offset", consumer.deltaOffset)
@@ -348,6 +352,7 @@ func (consumer *Consumer) resetReader() {
 	if consumer.reader != nil {
 		// close old reader first, or the new reader will not be able to bind partition(unless waiting for the kafka rebalance)
 		consumer.reader.Close()
+		consumer.cancelReader(fmt.Errorf("[Consumer.resetReader] about to reset kafka reader"))
 	}
 	if len(consumer.topics) > 0 {
 		readerConfig := kafka.ReaderConfig{
@@ -358,6 +363,7 @@ func (consumer *Consumer) resetReader() {
 		if consumer.Verbose {
 			readerConfig.Logger = consumer.logger
 		}
+		consumer.readerCtx, consumer.cancelReader = context.WithCancelCause(consumer.context)
 		consumer.reader = kafka.NewReader(readerConfig)
 		consumer.logger.Info("[Consumer.resetReader] reset kafka reader success", "topics", consumer.topics)
 	} else {
