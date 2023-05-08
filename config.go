@@ -106,6 +106,8 @@ func (config *ConsumerConfig) Validate() (err error) {
 	// use default max message interval if not set
 	if config.MaxMsgInterval == 0 {
 		config.MaxMsgInterval = 5 * 60 * time.Second
+	} else if config.MaxMsgInterval < 30*time.Second {
+		err = multierror.Append(err, fmt.Errorf("MaxMsgInterval should be greater than 30 seconds, got %v", config.MaxMsgInterval))
 	}
 	// use default sync topic interval if not set
 	if config.SyncTopicInterval == 0 {
@@ -129,10 +131,9 @@ func (config *ConsumerConfig) Validate() (err error) {
 	}
 	// use default logger if not set
 	if config.Logger == nil {
-		config.Logger, err = initDefaultLogger(config.LogLevel)
-		if err != nil {
-			return
-		}
+		var tmpErr error
+		config.Logger, tmpErr = initDefaultLogger(config.LogLevel)
+		err = multierror.Append(err, tmpErr).ErrorOrNil()
 	}
 
 	return

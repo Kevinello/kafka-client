@@ -28,7 +28,7 @@ func TestConsumer(t *testing.T) {
 			Bootstrap:      "9.134.95.221:9092",
 			GroupID:        "unit-test-group-" + time.Now().Format(time.DateOnly),
 			GetTopics:      kc.GetTopicReMatch([]string{"^unit-test.*$"}),
-			MaxMsgInterval: 10 * time.Second,
+			MaxMsgInterval: 30 * time.Second,
 			MessageHandler: func(msg *kafka.Message, consumer *kc.Consumer) (err error) {
 				defer wg.Done()
 				count++

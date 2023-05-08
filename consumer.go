@@ -103,7 +103,7 @@ func NewConsumer(ctx context.Context, config ConsumerConfig) (c *Consumer, err e
 		ConsumerConfig: config,
 		id:             uuid.New().String(),
 		reader:         reader,
-		workerPool:     pond.New(config.MaxConsumeGoroutines, 2*config.MaxConsumeGoroutines, pond.Strategy(pond.Balanced())),
+		workerPool:     pond.New(config.MaxConsumeGoroutines, 2*config.MaxConsumeGoroutines, pond.MinWorkers(lo.Max([]int{config.MaxConsumeGoroutines / 2, 1}))),
 
 		context:          subCtx,
 		cancel:           cancel,
@@ -206,6 +206,7 @@ func (consumer *Consumer) run() {
 						consumer.consumeErrorChan <- e
 					}
 				} else {
+					consumer.logger.Info("[Consumer.run] receive message", "message", msg)
 					// successful consumption of data
 					if !consumer.workerPool.Stopped() {
 						consumer.workerPool.Submit(func() {
