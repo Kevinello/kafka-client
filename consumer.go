@@ -209,7 +209,7 @@ func (consumer *Consumer) run() {
 						consumer.consumeErrorChan <- e
 					}
 				} else {
-					consumer.logger.Info("[Consumer.run] receive message", "message", msg)
+					consumer.logger.Info("[Consumer.run] receive message", "message key", string(msg.Key))
 					// successful consumption of data
 					if !consumer.workerPool.Stopped() {
 						consumer.workerPool.Submit(func() {
