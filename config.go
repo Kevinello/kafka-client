@@ -179,6 +179,9 @@ func initDefaultLogger(level int) (logger *logr.Logger, err error) {
 	} else {
 		err = fmt.Errorf("[InitDefaultLogger] found invalid level: %d, level should be in range[-1, 5]", level)
 	}
+	// set time format
+	cfg.EncoderConfig.EncodeTime = zapcore.RFC3339TimeEncoder
+	// add color for console
 	cfg.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
 	zapLogger := zap.New(zapcore.NewCore(zapcore.NewConsoleEncoder(cfg.EncoderConfig), zapcore.NewMultiWriteSyncer(zapcore.AddSync(os.Stdout)), zapLevel))
 	*logger = zapr.NewLogger(zapLogger)
