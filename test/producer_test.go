@@ -10,7 +10,6 @@ import (
 	"unicode"
 
 	kc "github.com/Kevinello/kafka-client"
-	"github.com/google/uuid"
 	"github.com/samber/lo"
 	"github.com/segmentio/kafka-go"
 	. "github.com/smartystreets/goconvey/convey"
@@ -46,25 +45,26 @@ func TestProducer(t *testing.T) {
 		// New a producer instance.
 		producer, err := kc.NewProducer(context.Background(), config)
 		So(err, ShouldBeNil)
-		Convey("When produce 1000 messages on 10 topics", func() {
+		Convey("When produce 10000 messages on 10 topics", func() {
 			randomString := make([]string, 0)
-			for i := 0; i < 10; i++ {
-				randomString = append(randomString, lo.RandomString(1000, chineseRunes))
+			for i := 0; i < 1000; i++ {
+				randomString = append(randomString, lo.RandomString(100, chineseRunes))
 			}
-			for i := 0; i < 100; i++ {
-				msgs := make([]kafka.Message, 10)
-				for j := 0; j < 10; j++ {
-					// Generate a random key.
-					key := uuid.New().String()
+			for i := 0; i < 10; i++ {
+				topic := "unit-test-topic-" + strconv.Itoa(i)
+				msgs := make([]kafka.Message, 1000)
+				// prepare messages
+				for j := 0; j < 1000; j++ {
 					msgs[j] = kafka.Message{
-						Topic: "unit-test-topic-" + strconv.Itoa(j),
-						Key:   []byte(key),
+						Topic: topic,
+						Key:   []byte(randomString[j][:10]),
 						Value: []byte(randomString[j]),
 					}
 				}
+				// write messages
 				err = producer.WriteMessages(context.Background(), msgs...)
 				So(err, ShouldBeNil)
-				producer.Logger.Info("write messages done", "count", len(msgs))
+				producer.Logger.Info("write messages done", "topic", topic, "count", len(msgs))
 			}
 			producer.Logger.Info("write all messages done")
 

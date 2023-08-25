@@ -22,26 +22,31 @@ import (
 func TestConsumer(t *testing.T) {
 	Convey("Given a kafka consumer", t, func() {
 		var wg sync.WaitGroup
-		wg.Add(1000)
+		wg.Add(10000)
 		count := 0
 		config := kc.ConsumerConfig{
 			Bootstrap:      "9.134.95.221:9092",
 			GroupID:        "unit-test-group-" + time.Now().Format(time.DateOnly),
-			GetTopics:      kc.GetTopicReMatch([]string{"^unit-test.*$"}),
+			GetTopics:      kc.GetTopicReMatch([]string{"^unit-test-topic-\\d$"}),
 			MaxMsgInterval: 30 * time.Second,
 			MessageHandler: func(msg *kafka.Message, consumer *kc.Consumer) (err error) {
 				defer wg.Done()
 				count++
-				consumer.Logger.Info("received a message", "key", string(msg.Key), "value length", len(msg.Value), "topic", msg.Topic, "offset", msg.Offset, "count", count)
+				consumer.Logger.Info("received a message, handle for 1 second", "key", string(msg.Key), "value length", len(msg.Value), "topic", msg.Topic, "offset", msg.Offset, "count", count)
+				consumer.CheckState()
+				time.Sleep(1 * time.Second)
 				return
 			},
-			// Verbose: true,
+			MaxConsumeGoroutines: 100,
+			// Verbose:              true,
 		}
+		start := time.Now()
 		consumer, err := kc.NewConsumer(context.Background(), config)
 		So(err, ShouldBeNil)
 
-		// consume 1000 messages
+		// consume 10000 messages
 		wg.Wait()
+		consumer.Logger.Info("consume all messages", "count", count, "time", time.Since(start))
 
 		// Close the consumer
 		err = consumer.Close()

@@ -162,6 +162,8 @@ func (consumer *Consumer) CheckState() {
 		"consumerClosed", consumerClosed,
 		"readerExist", readerExist,
 		"workerpoolStopped", workerpoolStopped,
+		"runningWorkerNum", consumer.workerPool.RunningWorkers(),
+		"idleWorkerNum", consumer.workerPool.IdleWorkers(),
 		"consumeErrors", consumer.consumeErrors,
 		"deltaOffset", consumer.deltaOffset,
 		"topics", consumer.topics)
