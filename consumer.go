@@ -5,6 +5,7 @@ package kafka
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -203,7 +204,7 @@ func (consumer *Consumer) run() {
 				if msg, e := consumer.reader.ReadMessage(consumer.readerCtx); e != nil {
 					if e == context.Canceled || e == context.DeadlineExceeded {
 						consumer.logger.Info("[Consumer.run] context canceled, restart reading message", "cause", context.Cause(consumer.readerCtx))
-					} else if e == io.EOF {
+					} else if errors.Is(e, io.EOF) {
 						// EOF means that the reader has been closed
 						consumer.logger.Info("[Consumer.run] reader closed, restart reading message")
 					} else {
