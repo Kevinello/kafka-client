@@ -26,8 +26,8 @@ github.com/hashicorp/go-multierror
 # github.com/jtolds/gls v4.20.0+incompatible
 ## explicit
 github.com/jtolds/gls
-# github.com/klauspost/compress v1.15.15
-## explicit; go 1.17
+# github.com/klauspost/compress v1.17.4
+## explicit; go 1.19
 github.com/klauspost/compress
 github.com/klauspost/compress/flate
 github.com/klauspost/compress/fse
@@ -39,7 +39,7 @@ github.com/klauspost/compress/s2
 github.com/klauspost/compress/snappy
 github.com/klauspost/compress/zstd
 github.com/klauspost/compress/zstd/internal/xxhash
-# github.com/pierrec/lz4/v4 v4.1.17
+# github.com/pierrec/lz4/v4 v4.1.19
 ## explicit; go 1.14
 github.com/pierrec/lz4/v4
 github.com/pierrec/lz4/v4/internal/lz4block
@@ -49,7 +49,7 @@ github.com/pierrec/lz4/v4/internal/xxh32
 # github.com/samber/lo v1.38.1
 ## explicit; go 1.18
 github.com/samber/lo
-# github.com/segmentio/kafka-go v0.4.39
+# github.com/segmentio/kafka-go v0.4.47
 ## explicit; go 1.15
 github.com/segmentio/kafka-go
 github.com/segmentio/kafka-go/compress
@@ -60,16 +60,23 @@ github.com/segmentio/kafka-go/compress/zstd
 github.com/segmentio/kafka-go/protocol
 github.com/segmentio/kafka-go/protocol/addoffsetstotxn
 github.com/segmentio/kafka-go/protocol/addpartitionstotxn
+github.com/segmentio/kafka-go/protocol/alterclientquotas
 github.com/segmentio/kafka-go/protocol/alterconfigs
 github.com/segmentio/kafka-go/protocol/alterpartitionreassignments
+github.com/segmentio/kafka-go/protocol/alteruserscramcredentials
 github.com/segmentio/kafka-go/protocol/apiversions
 github.com/segmentio/kafka-go/protocol/consumer
 github.com/segmentio/kafka-go/protocol/createacls
 github.com/segmentio/kafka-go/protocol/createpartitions
 github.com/segmentio/kafka-go/protocol/createtopics
+github.com/segmentio/kafka-go/protocol/deleteacls
+github.com/segmentio/kafka-go/protocol/deletegroups
 github.com/segmentio/kafka-go/protocol/deletetopics
+github.com/segmentio/kafka-go/protocol/describeacls
+github.com/segmentio/kafka-go/protocol/describeclientquotas
 github.com/segmentio/kafka-go/protocol/describeconfigs
 github.com/segmentio/kafka-go/protocol/describegroups
+github.com/segmentio/kafka-go/protocol/describeuserscramcredentials
 github.com/segmentio/kafka-go/protocol/electleaders
 github.com/segmentio/kafka-go/protocol/endtxn
 github.com/segmentio/kafka-go/protocol/fetch
@@ -81,16 +88,19 @@ github.com/segmentio/kafka-go/protocol/joingroup
 github.com/segmentio/kafka-go/protocol/leavegroup
 github.com/segmentio/kafka-go/protocol/listgroups
 github.com/segmentio/kafka-go/protocol/listoffsets
+github.com/segmentio/kafka-go/protocol/listpartitionreassignments
 github.com/segmentio/kafka-go/protocol/metadata
 github.com/segmentio/kafka-go/protocol/offsetcommit
 github.com/segmentio/kafka-go/protocol/offsetdelete
 github.com/segmentio/kafka-go/protocol/offsetfetch
 github.com/segmentio/kafka-go/protocol/produce
+github.com/segmentio/kafka-go/protocol/rawproduce
 github.com/segmentio/kafka-go/protocol/saslauthenticate
 github.com/segmentio/kafka-go/protocol/saslhandshake
 github.com/segmentio/kafka-go/protocol/syncgroup
 github.com/segmentio/kafka-go/protocol/txnoffsetcommit
 github.com/segmentio/kafka-go/sasl
+github.com/segmentio/kafka-go/sasl/scram
 # github.com/smartystreets/assertions v1.2.0
 ## explicit; go 1.13
 github.com/smartystreets/assertions
@@ -104,6 +114,15 @@ github.com/smartystreets/goconvey/convey/gotest
 github.com/smartystreets/goconvey/convey/reporting
 # github.com/stretchr/testify v1.8.2
 ## explicit; go 1.13
+# github.com/xdg-go/pbkdf2 v1.0.0
+## explicit; go 1.9
+github.com/xdg-go/pbkdf2
+# github.com/xdg-go/scram v1.1.2
+## explicit; go 1.11
+github.com/xdg-go/scram
+# github.com/xdg-go/stringprep v1.0.4
+## explicit; go 1.11
+github.com/xdg-go/stringprep
 # go.uber.org/atomic v1.7.0
 ## explicit; go 1.13
 go.uber.org/atomic
@@ -122,5 +141,7 @@ go.uber.org/zap/zapcore
 # golang.org/x/exp v0.0.0-20220303212507-bbda1eaf7a17
 ## explicit; go 1.18
 golang.org/x/exp/constraints
-# golang.org/x/net v0.0.0-20220722155237-a158d28d115b
-## explicit; go 1.17
+# golang.org/x/text v0.14.0
+## explicit; go 1.18
+golang.org/x/text/transform
+golang.org/x/text/unicode/norm

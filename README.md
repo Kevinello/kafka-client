@@ -14,6 +14,7 @@ kafka-client is a high level wrapped kafka API for kafka consuming and producing
 - Safe manual close
 - Asynchronous cancellations and timeouts using Go contexts
 - Custom logger and verbose option
+- SASL authentication
 
 ### Kafka producer
 
@@ -21,6 +22,17 @@ kafka-client is a high level wrapped kafka API for kafka consuming and producing
 - Safe manual close
 - Asynchronous cancellations and timeouts using Go contexts
 - Custom logger and verbose option
+- SASL authentication
+
+## Usage
+
+For basic usage examples, refer to the system test cases in the `test` directory.
+
+To run the system tests, you need to have a Kafka broker(set [auto.create.topics.enable](https://kafka.apache.org/documentation/#brokerconfigs_auto.create.topics.enable) to `true`, or create topics `unit-test-topic-1` ... `unit-test-topic-10` before starting tests) and set environment variables below:
+
+- KAFKA_BOOTSTRAP: kafka broker address
+- KAFKA_SASL_USERNAME(optional): kafka sasl username
+- KAFKA_SASL_PASSWORD(optional): kafka sasl password
 
 ## Project Structure
 

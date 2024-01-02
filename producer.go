@@ -74,6 +74,14 @@ func NewProducer(ctx context.Context, config ProducerConfig) (p *Producer, err e
 	// create a kafka writer
 	writer := kafka.NewWriter(writerConfig)
 
+	// if machanism is set, set the sasl authentication
+	if config.Mechanism != nil {
+		sharedTransport := &kafka.Transport{
+			SASL: config.Mechanism,
+		}
+		writer.Transport = sharedTransport
+	}
+
 	// set the writer to allow auto topic creation
 	// if we don't want to ignore the missing topic
 	writer.AllowAutoTopicCreation = config.AllowAutoTopicCreation

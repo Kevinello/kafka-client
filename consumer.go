@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/samber/lo"
 	"github.com/segmentio/kafka-go"
+	"github.com/segmentio/kafka-go/sasl"
 )
 
 // Consumer struct holds data related to the consumer
@@ -49,7 +50,7 @@ type Consumer struct {
 //	@return err error
 //	@author kevineluo
 //	@update 2023-03-28 07:16:54
-type GetTopicsFunc func(broker string) (topics []string, err error)
+type GetTopicsFunc func(broker string, mechanism sasl.Mechanism) (topics []string, err error)
 
 // MessageHandler function which handles received messages from the Kafka broker.
 //
@@ -79,7 +80,7 @@ func NewConsumer(ctx context.Context, config ConsumerConfig) (c *Consumer, err e
 	logger := &logger{*config.Logger}
 	logger.Info("[NewConsumer] start new consumer with config", "config", config)
 	brokers := strings.Split(config.Bootstrap, ",")
-	topics, err := config.GetTopics(brokers[0])
+	topics, err := config.GetTopics(brokers[0], config.Mechanism)
 	if err != nil {
 		err = fmt.Errorf("[NewConsumer] getTopics error: %w, GroupID: %s", err, config.GroupID)
 		return
@@ -92,8 +93,20 @@ func NewConsumer(ctx context.Context, config ConsumerConfig) (c *Consumer, err e
 		GroupID:     config.GroupID,
 		Brokers:     brokers,
 	}
+
+	// set the logger if in verbose mode
 	if config.Verbose {
 		readerConfig.Logger = logger
+	}
+
+	// set the dialer if SASL mechanism is set
+	if config.Mechanism != nil {
+		dialer := &kafka.Dialer{
+			Timeout:       10 * time.Second,
+			DualStack:     true,
+			SASLMechanism: config.Mechanism,
+		}
+		readerConfig.Dialer = dialer
 	}
 
 	var reader *kafka.Reader
@@ -333,7 +346,7 @@ func (consumer *Consumer) Closed() <-chan struct{} {
 func (consumer *Consumer) syncTopics() (topics []string, changed bool, err error) {
 	topics = make([]string, 0)
 
-	if topics, err = consumer.GetTopics(consumer.brokers[0]); err != nil {
+	if topics, err = consumer.GetTopics(consumer.brokers[0], consumer.Mechanism); err != nil {
 		err = fmt.Errorf("[Consumer.CheckTopics] get topics error: %w, GroupID: %s", err, consumer.GroupID)
 		return
 	}
@@ -382,9 +395,9 @@ func (consumer *Consumer) resetReader() {
 //	@author kevineluo
 //	@update 2023-03-29 03:22:56
 func GetTopicReMatch(reList []string) GetTopicsFunc {
-	return func(broker string) (topics []string, err error) {
+	return func(broker string, mechanism sasl.Mechanism) (topics []string, err error) {
 		topics = make([]string, 0)
-		allTopics, err := getTopics(broker)
+		allTopics, err := getTopics(broker, mechanism)
 		if err != nil {
 			return
 		}
@@ -407,14 +420,16 @@ func GetTopicReMatch(reList []string) GetTopicsFunc {
 //	@author kevineluo
 //	@update 2023-03-15 03:14:57
 func GetAllTopic() GetTopicsFunc {
-	return func(broker string) (topics []string, err error) {
-		topics, err = getTopics(broker)
+	return func(broker string, mechanism sasl.Mechanism) (topics []string, err error) {
+		topics, err = getTopics(broker, mechanism)
 		return
 	}
 }
 
-func getTopics(broker string) (topics []string, err error) {
-	conn, err := kafka.Dial("tcp", broker)
+func getTopics(broker string, mechanism sasl.Mechanism) (topics []string, err error) {
+	dialer := kafka.DefaultDialer
+	dialer.SASLMechanism = mechanism
+	conn, err := dialer.Dial("tcp", broker)
 	if err != nil {
 		err = fmt.Errorf("[getTopics] error when connect to kafka: %w", err)
 		return

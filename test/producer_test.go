@@ -12,6 +12,7 @@ import (
 	kc "github.com/Kevinello/kafka-client"
 	"github.com/samber/lo"
 	"github.com/segmentio/kafka-go"
+	"github.com/segmentio/kafka-go/sasl/scram"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -39,9 +40,15 @@ func TestProducer(t *testing.T) {
 	Convey("Given a kafka producer", t, func() {
 		// Create a producer config.
 		config := kc.ProducerConfig{
-			Bootstrap:              "9.134.95.221:9092",
+			Bootstrap:              kafkaBootstrap,
 			AllowAutoTopicCreation: true,
 		}
+		if saslUsername != "" && saslPassword != "" {
+			mechanism, err := scram.Mechanism(scram.SHA512, saslUsername, saslPassword)
+			So(err, ShouldBeNil)
+			config.Mechanism = mechanism
+		}
+
 		// New a producer instance.
 		producer, err := kc.NewProducer(context.Background(), config)
 		So(err, ShouldBeNil)

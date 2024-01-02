@@ -10,6 +10,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/go-logr/zapr"
 	"github.com/hashicorp/go-multierror"
+	"github.com/segmentio/kafka-go/sasl"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
@@ -23,22 +24,22 @@ type (
 		// the Kafka broker address, the default value is "localhost:9092".
 		// If you have multiple brokers, you can use a comma to separate them, such as "localhost:9092,localhost:9093,localhost:9094".
 		// default: "localhost:9092"
-		Bootstrap string `json:"bootstrap,omitempty"`
+		Bootstrap string `json:"bootstrap"`
 
 		// Group ID of consumer
-		GroupID string `json:"group_id,omitempty"`
+		GroupID string `json:"group_id"`
 
 		// If no message received after [MaxMsgInterval] seconds then restart Consumer, default: 300 seconds
-		MaxMsgInterval time.Duration `json:"max_msg_interval,omitempty"`
+		MaxMsgInterval time.Duration `json:"max_msg_interval"`
 
 		// Interval for consumer to sync topics, default: 15 seconds
-		SyncTopicInterval time.Duration `json:"sync_topic_interval,omitempty"`
+		SyncTopicInterval time.Duration `json:"sync_topic_interval"`
 
 		// Maximum number of goroutine for subscribing to topics, default: runtime.NumCPU()
-		MaxConsumeGoroutines int `json:"max_consume_goroutines,omitempty"`
+		MaxConsumeGoroutines int `json:"max_consume_goroutines"`
 
 		// max error count from consuming messages, set it to -1 to ignore error, default: 5
-		MaxConsumeErrorCount int `json:"max_consume_error_count,omitempty"`
+		MaxConsumeErrorCount int `json:"max_consume_error_count"`
 
 		// function which handles received messages from the Kafka broker
 		MessageHandler MessageHandler `json:"-"`
@@ -49,13 +50,16 @@ type (
 		// logger implement logr.LogSinker, default: zapr.Logger
 		Logger *logr.Logger `json:"-"`
 
+		// Mechanism sasl authentication, default: nil
+		Mechanism sasl.Mechanism `json:"-"`
+
 		// used when Config.logger is nil, follow the zap style level(https://pkg.go.dev/go.uber.org/zap@v1.24.0/zapcore#Level),
 		// setting the log level for zapr.Logger(config.logLevel should be in range[-1, 5])
 		// default: 0 -- InfoLevel
-		LogLevel int `json:"log_level,omitempty"`
+		LogLevel int `json:"log_level"`
 
 		// enable verbose kafka-go log, default: false
-		Verbose bool `json:"verbose,omitempty"`
+		Verbose bool `json:"verbose"`
 	}
 
 	// ProducerConfig configuration object used to create new instances of Producer
@@ -64,27 +68,30 @@ type (
 	//	@update 2023-03-15 03:01:48
 	ProducerConfig struct {
 		// kafka bootstrap, default: "localhost:9092"
-		Bootstrap string
+		Bootstrap string `json:"bootstrap"`
 
 		// determine synchronously / asynchronously write messages, default: false
-		Async bool
+		Async bool `json:"async"`
 
 		// By default kafka has the auto.create.topics.enable='true', you can ignore this config.
 		// when this config, producer will attempt to create topic prior to publishing the message,
 		// else it will return an error when meeting missing topic,
 		// default: false
-		AllowAutoTopicCreation bool
+		AllowAutoTopicCreation bool `json:"allow_auto_topic_creation"`
 
 		// logger implement logr.LogSinker, default: zapr.Logger
-		Logger *logr.Logger
+		Logger *logr.Logger `json:"-"`
+
+		// Mechanism sasl authentication, default: nil
+		Mechanism sasl.Mechanism `json:"-"`
 
 		// used when Config.logger is nil, follow the zap style level(https://pkg.go.dev/go.uber.org/zap@v1.24.0/zapcore#Level),
 		// setting the log level for zapr.Logger(config.logLevel should be in range[-1, 5])
 		// default: 0 -- InfoLevel
-		LogLevel int
+		LogLevel int `json:"log_level"`
 
 		// enable verbose kafka-go log, default: false
-		Verbose bool
+		Verbose bool `json:"verbose"`
 	}
 )
 

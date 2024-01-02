@@ -11,6 +11,7 @@ import (
 
 	kc "github.com/Kevinello/kafka-client"
 	"github.com/segmentio/kafka-go"
+	"github.com/segmentio/kafka-go/sasl/scram"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -24,8 +25,9 @@ func TestConsumer(t *testing.T) {
 		var wg sync.WaitGroup
 		wg.Add(10000)
 		count := 0
+
 		config := kc.ConsumerConfig{
-			Bootstrap:      "9.134.95.221:9092",
+			Bootstrap:      kafkaBootstrap,
 			GroupID:        "unit-test-group-" + time.Now().Format(time.DateOnly),
 			GetTopics:      kc.GetTopicReMatch([]string{"^unit-test-topic-\\d$"}),
 			MaxMsgInterval: 30 * time.Second,
@@ -38,8 +40,13 @@ func TestConsumer(t *testing.T) {
 				return
 			},
 			MaxConsumeGoroutines: 100,
-			// Verbose:              true,
 		}
+		if saslUsername != "" && saslPassword != "" {
+			mechanism, err := scram.Mechanism(scram.SHA512, saslUsername, saslPassword)
+			So(err, ShouldBeNil)
+			config.Mechanism = mechanism
+		}
+
 		start := time.Now()
 		consumer, err := kc.NewConsumer(context.Background(), config)
 		So(err, ShouldBeNil)
