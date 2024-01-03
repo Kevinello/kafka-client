@@ -1,6 +1,7 @@
 package kafka
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"os"
@@ -53,6 +54,9 @@ type (
 		// Mechanism sasl authentication, default: nil
 		Mechanism sasl.Mechanism `json:"-"`
 
+		// TLS TLS configuration, default: nil
+		TLS *tls.Config `json:"-"`
+
 		// used when Config.logger is nil, follow the zap style level(https://pkg.go.dev/go.uber.org/zap@v1.24.0/zapcore#Level),
 		// setting the log level for zapr.Logger(config.logLevel should be in range[-1, 5])
 		// default: 0 -- InfoLevel
@@ -84,6 +88,9 @@ type (
 
 		// Mechanism sasl authentication, default: nil
 		Mechanism sasl.Mechanism `json:"-"`
+
+		// TLS TLS configuration, default: nil
+		TLS *tls.Config `json:"-"`
 
 		// used when Config.logger is nil, follow the zap style level(https://pkg.go.dev/go.uber.org/zap@v1.24.0/zapcore#Level),
 		// setting the log level for zapr.Logger(config.logLevel should be in range[-1, 5])

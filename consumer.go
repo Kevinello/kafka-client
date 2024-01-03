@@ -99,15 +99,14 @@ func NewConsumer(ctx context.Context, config ConsumerConfig) (c *Consumer, err e
 		readerConfig.Logger = logger
 	}
 
-	// set the dialer if SASL mechanism is set
-	if config.Mechanism != nil {
-		dialer := &kafka.Dialer{
-			Timeout:       10 * time.Second,
-			DualStack:     true,
-			SASLMechanism: config.Mechanism,
-		}
-		readerConfig.Dialer = dialer
+	// set the dialer for SASL mechanism and TLS
+	dialer := &kafka.Dialer{
+		Timeout:       10 * time.Second,
+		DualStack:     true,
+		SASLMechanism: config.Mechanism,
+		TLS:           config.TLS,
 	}
+	readerConfig.Dialer = dialer
 
 	var reader *kafka.Reader
 	if len(topics) > 0 {

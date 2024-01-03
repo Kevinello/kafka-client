@@ -60,10 +60,19 @@ func NewProducer(ctx context.Context, config ProducerConfig) (p *Producer, err e
 	// split the bootstrap servers into a slice
 	brokers := strings.Split(config.Bootstrap, ",")
 
+	// set the dialer for SASL mechanism and TLS
+	dialer := &kafka.Dialer{
+		Timeout:       10 * time.Second,
+		DualStack:     true,
+		SASLMechanism: config.Mechanism,
+		TLS:           config.TLS,
+	}
+
 	// create a kafka writer config
 	writerConfig := kafka.WriterConfig{
 		Brokers: brokers,
 		Async:   config.Async,
+		Dialer:  dialer,
 	}
 
 	// set the logger if in verbose mode
@@ -73,14 +82,6 @@ func NewProducer(ctx context.Context, config ProducerConfig) (p *Producer, err e
 
 	// create a kafka writer
 	writer := kafka.NewWriter(writerConfig)
-
-	// if machanism is set, set the sasl authentication
-	if config.Mechanism != nil {
-		sharedTransport := &kafka.Transport{
-			SASL: config.Mechanism,
-		}
-		writer.Transport = sharedTransport
-	}
 
 	// set the writer to allow auto topic creation
 	// if we don't want to ignore the missing topic
@@ -138,9 +139,8 @@ func (producer *Producer) WriteMessages(ctx context.Context, msgs ...kafka.Messa
 		} else if errors.Is(e, kafka.LeaderNotAvailable) || errors.Is(e, context.DeadlineExceeded) {
 			time.Sleep(time.Millisecond * 250)
 			continue
-		} else {
-			return e
 		}
+		return e
 	}
 	return
 }
