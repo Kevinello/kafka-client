@@ -32,6 +32,7 @@ func init() {
 }
 
 // TestProducer test producer
+// NOTE: should be used with TestConsumer(run TestProducer first, then TestConsumer)
 //
 //	@param t *testing.T
 //	@author kevineluo
@@ -53,9 +54,9 @@ func TestProducer(t *testing.T) {
 		producer, err := kc.NewProducer(context.Background(), config)
 		So(err, ShouldBeNil)
 		Convey("When produce 10000 messages on 10 topics", func() {
-			randomString := make([]string, 0)
+			randomStrings := make([]string, 1000)
 			for i := 0; i < 1000; i++ {
-				randomString = append(randomString, lo.RandomString(100, chineseRunes))
+				randomStrings[i] = lo.RandomString(100, chineseRunes)
 			}
 			for i := 0; i < 10; i++ {
 				topic := "unit-test-topic-" + strconv.Itoa(i)
@@ -64,8 +65,8 @@ func TestProducer(t *testing.T) {
 				for j := 0; j < 1000; j++ {
 					msgs[j] = kafka.Message{
 						Topic: topic,
-						Key:   []byte(randomString[j][:10]),
-						Value: []byte(randomString[j]),
+						Key:   []byte(randomStrings[j][:10]),
+						Value: []byte(randomStrings[j]),
 					}
 				}
 				// write messages
@@ -80,4 +81,40 @@ func TestProducer(t *testing.T) {
 			So(err, ShouldBeNil)
 		})
 	})
+}
+
+// BenchmarkProducer benchmark producer
+// NOTE: Async	1332139	       888.3 ns/op	     390 B/op	       5 allocs/op
+//
+//	@param b *testing.B
+//	@author kevineluo
+//	@update 2024-06-18 02:54:14
+func BenchmarkProducer(b *testing.B) {
+	ctx := context.Background()
+	// Create a producer
+	config := kc.ProducerConfig{
+		Bootstrap:              kafkaBootstrap,
+		AllowAutoTopicCreation: true,
+		Async:                  true,
+	}
+	if saslUsername != "" && saslPassword != "" {
+		mechanism, _ := scram.Mechanism(scram.SHA512, saslUsername, saslPassword)
+		config.Mechanism = mechanism
+	}
+	producer, err := kc.NewProducer(ctx, config)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer producer.Close()
+	randomString := lo.RandomString(100, chineseRunes)
+	msg := kafka.Message{
+		Topic: "unit-test-topic",
+		Key:   []byte(randomString[:10]),
+		Value: []byte(randomString),
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		producer.WriteMessages(ctx, msg)
+	}
 }

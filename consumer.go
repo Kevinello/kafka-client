@@ -61,7 +61,7 @@ type GetTopicsFunc func(broker string, mechanism sasl.Mechanism) (topics []strin
 //	@update 2023-03-28 07:16:44
 type MessageHandler func(msg *kafka.Message, consumer *Consumer) (err error)
 
-// NewConsumer creates a new Kafka consumer.
+// NewConsumer creates a new Kafka consumer and start consuming messages from the Kafka broker.
 //
 //	@param kafkaBootstrap string
 //	@param groupID string
@@ -139,9 +139,104 @@ func NewConsumer(ctx context.Context, config ConsumerConfig) (c *Consumer, err e
 	// goroutine for checking error / topic change etc.
 	go c.check()
 
-	// goroutine for keep consuming messages
-	go c.run()
+	if !c.DisableLoop {
+		// goroutine for keep consuming messages
+		go c.run()
+	}
 
+	return
+}
+
+// ConsumeOnceOld consume messages once
+// NOTE: 这个函数不再使用，同步读取部分会产生性能瓶颈，使用ConsumeOnce代替
+// 同步读取 + 异步处理模式
+// 在主线程中同步调用reader.ReadMessage()读取消息
+// 仅消息处理部分(MessageHandler)通过workerPool.Submit()异步执行
+//
+//	@receiver consumer *Consumer
+//	@author kevineluo
+//	@update 2024-06-19 06:57:19
+func (consumer *Consumer) ConsumeOnceOld() (e error) {
+	select {
+	case <-consumer.context.Done():
+		e = context.Cause(consumer.context)
+		consumer.logger.Info("[Consumer.run] context canceled, stop consuming messages", "cause", context.Cause(consumer.context))
+		return
+	default:
+		if consumer.reader != nil {
+			if !consumer.workerPool.Stopped() {
+				if msg, e := consumer.reader.ReadMessage(consumer.readerCtx); e != nil {
+					if errors.Is(e, context.Canceled) || errors.Is(e, context.DeadlineExceeded) {
+						consumer.logger.Info("[Consumer.run] context canceled, restart reading message", "cause", context.Cause(consumer.readerCtx))
+					} else if errors.Is(e, io.EOF) {
+						// EOF means that the reader has been closed
+						consumer.logger.Info("[Consumer.run] reader closed, restart reading message")
+					} else {
+						consumer.logger.Error(e, "[Consumer.run] error when read message")
+						consumer.consumeErrorChan <- e
+					}
+				} else {
+					consumer.logger.Info("[Consumer.run] receive message", "message key", string(msg.Key))
+					consumer.workerPool.Submit(func() {
+						// successful consumption of data
+						if e = consumer.MessageHandler(&msg, consumer); e != nil && !errors.Is(e, context.Canceled) {
+							consumer.logger.Error(e, "[Consumer.run] error when handle message")
+							consumer.consumeErrorChan <- e
+						} else {
+							consumer.deltaOffset++
+							consumer.noMessageTimer.Reset(consumer.MaxMsgInterval)
+						}
+					})
+				}
+			} else {
+				e = fmt.Errorf("worker pool stopped")
+				consumer.logger.Error(e, "[Consumer.run] worker pool stopped but still receive message, please report this bug")
+			}
+		}
+	}
+	return
+}
+
+// ConsumeOnce consume messages once
+// NOTE: 采用完全异步模式，避免主线程阻塞，但失去了主线程对context取消的快速响应能力
+// 完全异步模式
+// 将整个读取和处理过程都通过workerPool.Submit()提交到工作池中异步执行
+// reader.ReadMessage()和MessageHandler都在工作池的goroutine中执行
+//
+//	@receiver consumer *Consumer
+//	@author kevineluo
+//	@update 2024-06-19 06:57:19
+func (consumer *Consumer) ConsumeOnce() (e error) {
+	if consumer.reader != nil {
+		if !consumer.workerPool.Stopped() {
+			consumer.workerPool.Submit(func() {
+				if msg, e := consumer.reader.ReadMessage(consumer.readerCtx); e != nil {
+					if errors.Is(e, context.Canceled) || errors.Is(e, context.DeadlineExceeded) {
+						consumer.logger.Info("[Consumer.run] context canceled, restart reading message", "cause", context.Cause(consumer.readerCtx))
+					} else if errors.Is(e, io.EOF) {
+						// EOF means that the reader has been closed
+						consumer.logger.Info("[Consumer.run] reader closed, restart reading message")
+					} else {
+						consumer.logger.Error(e, "[Consumer.run] error when read message")
+						consumer.consumeErrorChan <- e
+					}
+				} else {
+					consumer.logger.Info("[Consumer.run] receive message", "message key", string(msg.Key))
+					// successful consumption of data
+					if e = consumer.MessageHandler(&msg, consumer); e != nil && !errors.Is(e, context.Canceled) {
+						consumer.logger.Error(e, "[Consumer.run] error when handle message")
+						consumer.consumeErrorChan <- e
+					} else {
+						consumer.deltaOffset++
+						consumer.noMessageTimer.Reset(consumer.MaxMsgInterval)
+					}
+				}
+			})
+		} else {
+			e = fmt.Errorf("worker pool stopped")
+			consumer.logger.Error(e, "[Consumer.run] worker pool stopped but still receive message, please report this bug")
+		}
+	}
 	return
 }
 
@@ -158,7 +253,7 @@ func (consumer *Consumer) CheckState() {
 	)
 
 	select {
-	case <-consumer.Closed():
+	case <-consumer.context.Done():
 		consumerClosed = true
 	default:
 	}
@@ -189,7 +284,7 @@ func (consumer *Consumer) CheckState() {
 //	@update 2023-03-15 01:52:18
 func (consumer *Consumer) Close() error {
 	select {
-	case <-consumer.Closed():
+	case <-consumer.context.Done():
 		return ErrClosedConsumer
 	default:
 	}
@@ -206,41 +301,14 @@ func (consumer *Consumer) Close() error {
 //	@update 2023-03-15 02:39:04
 func (consumer *Consumer) run() {
 	defer close(consumer.consumeErrorChan)
+
 	for {
 		select {
 		case <-consumer.context.Done():
-			consumer.logger.Info("[Consumer.run] context canceled, stop consuming messages", "cause", context.Cause(consumer.context))
 			return
 		default:
-			if consumer.reader != nil {
-				if msg, e := consumer.reader.ReadMessage(consumer.readerCtx); e != nil {
-					if e == context.Canceled || e == context.DeadlineExceeded {
-						consumer.logger.Info("[Consumer.run] context canceled, restart reading message", "cause", context.Cause(consumer.readerCtx))
-					} else if errors.Is(e, io.EOF) {
-						// EOF means that the reader has been closed
-						consumer.logger.Info("[Consumer.run] reader closed, restart reading message")
-					} else {
-						consumer.logger.Error(e, "[Consumer.run] error when read message")
-						consumer.consumeErrorChan <- e
-					}
-				} else {
-					consumer.logger.Info("[Consumer.run] receive message", "message key", string(msg.Key))
-					// successful consumption of data
-					if !consumer.workerPool.Stopped() {
-						consumer.workerPool.Submit(func() {
-							if e = consumer.MessageHandler(&msg, consumer); e != nil && e != context.Canceled {
-								consumer.logger.Error(e, "[Consumer.run] error when handle message")
-								consumer.consumeErrorChan <- e
-							} else {
-								consumer.deltaOffset++
-								consumer.noMessageTimer.Reset(consumer.MaxMsgInterval)
-							}
-						})
-					} else {
-						consumer.logger.Error(fmt.Errorf("worker pool stopped"), "[Consumer.run] worker pool stopped but still receive message, please report this bug")
-					}
-				}
-			}
+			// no need to check error here, because consumeOnce will handle it
+			consumer.ConsumeOnce()
 		}
 	}
 }
@@ -261,7 +329,7 @@ func (consumer *Consumer) check() {
 		select {
 		case <-consumer.context.Done():
 			// wait for context cancellation
-			consumer.logger.Info("[Consumer.check] context canceled, stop checking")
+			consumer.logger.Info("[Consumer.check] context canceled, stop checking", "cause", context.Cause(consumer.context))
 			return
 		case <-consumer.noMessageTimer.C:
 			// too long since last consumed message, reset kafka reader(connection)
@@ -305,20 +373,25 @@ func (consumer *Consumer) cleanup() (err error) {
 	consumer.logger.Info("[Consumer.cleanup] context canceled, about to cleanup resources", "cause", context.Cause(consumer.context), "ID", consumer.id, "delta offset", consumer.deltaOffset)
 	if consumer.reader != nil {
 		consumer.logger.Info("[Consumer.cleanup] close kafka reader")
+		// cancel all read message(reader.ReadMessage)
 		consumer.cancelReader(fmt.Errorf("[Consumer.cleanup] context canceled, about to close kafka reader"))
+		// explicitly close reader
 		err = consumer.reader.Close()
 		if err != nil {
-			consumer.logger.Error(err, "[Consumer.cleanup] error when close kafka Reader", "cause", context.Cause(consumer.context), "ID", consumer.id, "delta offset", consumer.deltaOffset)
+			consumer.logger.Error(err, "[Consumer.cleanup] error when close kafka Reader", "ID", consumer.id, "delta offset", consumer.deltaOffset)
 		}
 	}
+
+	// stop noMessageTimer first to prevent it from firing in consumer.check() and reset kafka reader
+	consumer.logger.Info("[Consumer.cleanup] stop noMessageTimer")
+	consumer.noMessageTimer.Stop()
+
 	// wait for workerpool to handle rest messages
 	consumer.logger.Info("[Consumer.cleanup] wait for workerpool to handle rest messages")
 	consumer.workerPool.StopAndWaitFor(30 * time.Second)
 
-	consumer.logger.Info("[Consumer.cleanup] stop noMessageTimer")
-	consumer.noMessageTimer.Stop()
-
 	consumer.logger.Info("[Consumer.cleanup] cleanup finished", "cause", context.Cause(consumer.context), "ID", consumer.id, "delta offset", consumer.deltaOffset)
+	consumer.workerPool.StopAndWait()
 
 	return
 }

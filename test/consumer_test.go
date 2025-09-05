@@ -10,12 +10,14 @@ import (
 	"time"
 
 	kc "github.com/Kevinello/kafka-client"
+	"github.com/samber/lo"
 	"github.com/segmentio/kafka-go"
 	"github.com/segmentio/kafka-go/sasl/scram"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
 // TestConsumer test consumer
+// NOTE: should be used with TestProducer(run TestProducer first, then TestConsumer)
 //
 //	@param t *testing.T
 //	@author kevineluo
@@ -27,16 +29,14 @@ func TestConsumer(t *testing.T) {
 		count := 0
 
 		config := kc.ConsumerConfig{
-			Bootstrap:      kafkaBootstrap,
-			GroupID:        "unit-test-group-" + time.Now().Format(time.DateOnly),
-			GetTopics:      kc.GetTopicReMatch([]string{"^unit-test-topic-\\d$"}),
-			MaxMsgInterval: 30 * time.Second,
+			Bootstrap: kafkaBootstrap,
+			GroupID:   "unit-test-group-" + time.Now().Format(time.DateOnly),
+			GetTopics: kc.GetTopicReMatch([]string{"^unit-test-topic-\\d$"}),
 			MessageHandler: func(msg *kafka.Message, consumer *kc.Consumer) (err error) {
 				defer wg.Done()
 				count++
-				consumer.Logger.Info("received a message, handle for 1 second", "key", string(msg.Key), "value length", len(msg.Value), "topic", msg.Topic, "offset", msg.Offset, "count", count)
+				consumer.Logger.Info("received a message", "key", string(msg.Key), "value length", len(msg.Value), "topic", msg.Topic, "offset", msg.Offset, "count", count)
 				consumer.CheckState()
-				time.Sleep(1 * time.Second)
 				return
 			},
 			MaxConsumeGoroutines: 100,
@@ -53,7 +53,7 @@ func TestConsumer(t *testing.T) {
 
 		// consume 10000 messages
 		wg.Wait()
-		consumer.Logger.Info("consume all messages", "count", count, "time", time.Since(start))
+		consumer.Logger.Info("consume all messages", "count", count, "time cost(s)", time.Since(start))
 
 		// Close the consumer
 		err = consumer.Close()
@@ -61,32 +61,70 @@ func TestConsumer(t *testing.T) {
 	})
 }
 
-func BenchmarkReset(b *testing.B) {
-	testTimer := time.NewTimer(10 * time.Second)
-	defer testTimer.Stop()
-	var wg sync.WaitGroup
-	wg.Add(b.N)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		go func() {
-			defer wg.Done()
-			testTimer.Reset(10 * time.Second)
-		}()
+// BenchmarkConsumer benchmark consumer
+// NOTE: Sync(include network cost)		10000	   2122209 ns/op	    1158 B/op	      22 allocs/op
+// NOTE: Old Sync(include network cost)	510	   2236091 ns/op	    1128 B/op	      23 allocs/op
+//
+//	@param b *testing.B
+//	@author kevineluo
+//	@update 2024-06-20 11:19:56
+func BenchmarkConsumer(b *testing.B) {
+	ctx := context.Background()
+	// Create a consumer
+	consumerConfig := kc.ConsumerConfig{
+		Bootstrap:   kafkaBootstrap,
+		GroupID:     "unit-test-group-" + time.Now().Format(time.DateOnly),
+		DisableLoop: true,
+		LogLevel:    2, // Error level
+		GetTopics:   kc.GetTopicReMatch([]string{"^unit-test-topic$"}),
+		MessageHandler: func(msg *kafka.Message, consumer *kc.Consumer) (err error) {
+			return
+		},
+		MaxConsumeGoroutines: 100,
 	}
-	wg.Wait()
-}
+	if saslUsername != "" && saslPassword != "" {
+		mechanism, err := scram.Mechanism(scram.SHA512, saslUsername, saslPassword)
+		if err != nil {
+			b.Fatal(err)
+		}
+		consumerConfig.Mechanism = mechanism
+	}
+	consumer, err := kc.NewConsumer(ctx, consumerConfig)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer consumer.Close()
 
-func BenchmarkTimeNow(b *testing.B) {
-	timeNow := time.Now()
-	timeNow.Day()
-	var wg sync.WaitGroup
-	wg.Add(b.N)
+	// Create a producer and write 10000 msgs
+	producerConfig := kc.ProducerConfig{
+		Bootstrap:              kafkaBootstrap,
+		AllowAutoTopicCreation: true,
+		LogLevel:               2, // Error level
+	}
+	if saslUsername != "" && saslPassword != "" {
+		mechanism, _ := scram.Mechanism(scram.SHA512, saslUsername, saslPassword)
+		producerConfig.Mechanism = mechanism
+	}
+	producer, err := kc.NewProducer(ctx, producerConfig)
+	if err != nil {
+		b.Fatal(err)
+	}
+	randomString := lo.RandomString(100, chineseRunes)
+	msg := kafka.Message{
+		Topic: "unit-test-topic",
+		Key:   []byte(randomString[:10]),
+		Value: []byte(randomString),
+	}
+	msgs := make([]kafka.Message, 10000)
+	for i := 0; i < 10000; i++ {
+		msgs[i] = msg
+	}
+	producer.WriteMessages(context.Background(), msgs...)
+	producer.Close()
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		go func() {
-			defer wg.Done()
-			timeNow = time.Now()
-		}()
+		consumer.ConsumeOnce()
 	}
-	wg.Wait()
+	b.StopTimer()
 }

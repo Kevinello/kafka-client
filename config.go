@@ -30,6 +30,9 @@ type (
 		// Group ID of consumer
 		GroupID string `json:"group_id"`
 
+		// Whether to disable consuming messages in a loop, default: false
+		DisableLoop bool `json:"disable_loop"`
+
 		// If no message received after [MaxMsgInterval] seconds then restart Consumer, default: 300 seconds
 		MaxMsgInterval time.Duration `json:"max_msg_interval"`
 
